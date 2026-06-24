@@ -4,6 +4,9 @@
   "private": true,
   "description": "Tally — automatic time tracking for client billables, built on ActivityWatch",
   "main": "dist-electron/main.js",
+  "engines": {
+    "node": ">=20 <23"
+  },
   "scripts": {
     "dev": "next dev",
     "build": "next build",

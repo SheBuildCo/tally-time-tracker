@@ -60,14 +60,30 @@ npm run dev        # http://localhost:3000 (uses the REST API routes)
 ```
 
 ### Build the Windows installer
-Run on **Windows** (electron-builder produces the native `.exe`/NSIS installer):
+
+**Automatically (recommended) — GitHub Actions builds it in the cloud.**
+Every push to the dev branch runs `.github/workflows/build-windows.yml` on a Windows
+runner and uploads `Tally-Setup-*.exe` as a build **artifact**. To get the installer:
+
+1. Open the repo on GitHub → **Actions** tab.
+2. Click the latest **Build Windows installer** run.
+3. Download the **Tally-Setup** artifact (a zip containing the `.exe`).
+
+To cut a versioned download teammates can bookmark, push a tag — the same workflow
+attaches the installer to a **GitHub Release**:
+```bash
+git tag v0.1.0
+git push origin v0.1.0
+```
+
+**Manually — build on a Windows machine yourself:**
 ```bash
 npm install
 npm run dist       # static-exports the UI, bundles the Electron main, builds dist/Tally-Setup-*.exe
 ```
-> The installer must be built on Windows (or Windows CI). On macOS/Linux you can
-> run `npm run export:next` and `npm run build:main` to verify the build, but not
-> produce a Windows `.exe`.
+> Use **Node 22 LTS** (see `.nvmrc`). The installer must be built on Windows (or the
+> Windows CI above). On macOS/Linux you can run `npm run export:next` and
+> `npm run build:main` to verify the build, but not produce a Windows `.exe`.
 
 ### Run the desktop app in dev (Electron shell + live reload)
 ```bash

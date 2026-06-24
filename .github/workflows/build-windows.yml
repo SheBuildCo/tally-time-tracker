@@ -1,0 +1,60 @@
+name: Build Windows installer
+
+# Builds the Tally Windows installer (.exe) in the cloud so nobody needs a local
+# Windows + Visual Studio toolchain. Runs on every push to the dev branch and can
+# be triggered by hand. Pushing a version tag (e.g. v0.1.0) also publishes the
+# installer as a GitHub Release.
+on:
+  push:
+    branches:
+      - claude/brave-gauss-blm49y
+    tags:
+      - "v*"
+  workflow_dispatch: {}
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v4
+
+      # Node 22 LTS — better-sqlite3 ships prebuilt binaries for it, and
+      # electron-builder rebuilds the native module against Electron's ABI.
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run tests
+        run: npm test
+
+      - name: Build Windows installer
+        run: npm run dist
+        env:
+          # electron-builder uses this to avoid GitHub API rate limits while
+          # downloading Electron; it is provided automatically to the workflow.
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # Always make the installer downloadable from the run's "Artifacts" section.
+      - name: Upload installer artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Tally-Setup
+          path: dist/Tally-Setup-*.exe
+          if-no-files-found: error
+          retention-days: 30
+
+      # When a version tag is pushed, attach the installer to a GitHub Release so
+      # teammates can download it from a stable URL.
+      - name: Publish release (tags only)
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/Tally-Setup-*.exe
+          fail_on_unmatched_files: true
