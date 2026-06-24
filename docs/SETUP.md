@@ -41,6 +41,19 @@ After installing, click the extension icon once — it should show "Connected" t
 > further intersects it with non-idle time, so a URL is only billed when you were
 > actually present in that tab.
 
+### Comet and browsers without an extension
+
+Tally also tracks at **window-title** granularity, so browsers that don't have an
+ActivityWatch extension — like **Comet** — are still captured in detail: the active
+tab's title (e.g. a specific client chat in Teams, or a document name) shows up as
+an "activity" even without a URL. For these browsers:
+
+- You don't need the web extension — the window watcher already reports tab titles.
+- Map them to clients with **title** rules: in **Settings → Unassigned usage**, a
+  browser tab with no URL is suggested as a *tab/chat title* rule you can assign to
+  a client. You can also map by a keyword that appears in the title (e.g. the
+  client's name).
+
 ## 3. Verify capture
 
 1. Use Outlook desktop, Teams, and a client web app for a few minutes.
@@ -52,13 +65,19 @@ After installing, click the extension icon once — it should show "Connected" t
 
 ## 4. Run Tally
 
+**End users (recommended):** install the **Tally** desktop app (the
+`Tally-Setup-*.exe` installer). On first launch it checks for ActivityWatch and, if
+it isn't running, offers to take you to the download page. Once AW is running, your
+activity appears automatically; otherwise Tally still shows your saved history.
+
+**Developers:** run it in the browser instead —
 ```bash
 npm install
 npm run dev    # http://localhost:3000
 ```
 
-Open the dashboard. If ActivityWatch is reachable you'll see your activity; if not,
-Tally shows a clear "ActivityWatch isn't reachable" banner instead of failing.
+Either way, if ActivityWatch is reachable you'll see today's activity; if not, Tally
+shows a clear "ActivityWatch isn't running" banner and falls back to saved history.
 
 ## 5. Map usage to clients
 
@@ -82,4 +101,18 @@ right client's billables.
 | Web time missing / no URLs           | Install the browser extension and click it to confirm "Connected".  |
 | Edge not tracked                     | Install the Chrome Web Store extension in Edge (it's Chromium).      |
 | Wrong client on a site               | Edit/replace the mapping rule in **Settings → Mapping rules**.       |
+| Comet/other browser tab not mapped   | Map it by **title** in Settings → Unassigned usage (no URL needed).  |
+| Changed rules, old time still wrong  | Click **Re-sync with current rules** in Settings.                   |
 | AW on a non-default port             | Set `AW_BASE_URL` before starting Tally.                             |
+
+## Building the installer (for whoever distributes Tally)
+
+On a **Windows** machine:
+
+```bash
+npm install
+npm run dist     # produces dist/Tally-Setup-<version>.exe
+```
+
+Share that `.exe` with the team. Each teammate also needs ActivityWatch installed
+(step 1) — Tally will prompt them if it's missing.

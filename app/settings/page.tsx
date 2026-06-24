@@ -1,24 +1,22 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { Card, Title, Text } from "@tremor/react";
 import { useDashboard } from "@/components/DashboardContext";
-import { formatCurrency, formatHours, secondsToHours } from "@/lib/format";
+import { PageHeading, Panel, PanelTitle, Pill } from "@/components/ui";
+import { api } from "@/lib/client";
+import { formatHours, secondsToHours } from "@/lib/format";
 import type { Client, MappingRule } from "@/lib/types";
 import type { RuleSuggestion } from "@/lib/categorize";
 
 export default function SettingsPage() {
-  const { report, refresh } = useDashboard();
+  const { report, refresh, days } = useDashboard();
   const [clients, setClients] = useState<Client[]>([]);
   const [rules, setRules] = useState<MappingRule[]>([]);
 
   const reload = useCallback(async () => {
-    const [c, r] = await Promise.all([
-      fetch("/api/clients").then((res) => res.json()),
-      fetch("/api/rules").then((res) => res.json()),
-    ]);
-    setClients(c.clients ?? []);
-    setRules(r.rules ?? []);
+    const [c, r] = await Promise.all([api().listClients(), api().listRules()]);
+    setClients(c.clients);
+    setRules(r.rules);
   }, []);
 
   useEffect(() => {
@@ -31,35 +29,54 @@ export default function SettingsPage() {
       : clients.find((c) => c.id === id)?.name ?? `Client ${id}`;
 
   return (
-    <div className="space-y-6">
-      <div>
-        <h1 className="text-2xl font-bold text-gray-900">Settings</h1>
-        <p className="text-sm text-gray-500">
-          Manage clients, billable rates and the rules that map usage to
-          clients. Tracking itself is automatic — this is the only setup needed.
-        </p>
+    <div>
+      <PageHeading
+        title="Settings"
+        subtitle="Tracking is automatic — this is the only setup. Map usage to clients here."
+        actions={<ResyncButton days={days} onDone={refresh} />}
+      />
+
+      <div className="space-y-4">
+        <UnassignedSuggestions
+          suggestions={report?.suggestions ?? []}
+          clients={clients}
+          onCreated={async () => {
+            await reload();
+            refresh();
+          }}
+        />
+        <ClientsCard clients={clients} onChange={reload} />
+        <RulesCard
+          rules={rules}
+          clientName={clientName}
+          onChange={async () => {
+            await reload();
+            refresh();
+          }}
+        />
       </div>
-
-      <UnassignedSuggestions
-        suggestions={report?.suggestions ?? []}
-        clients={clients}
-        onCreated={async () => {
-          await reload();
-          refresh();
-        }}
-      />
-
-      <ClientsCard clients={clients} onChange={reload} />
-
-      <RulesCard
-        rules={rules}
-        clientName={clientName}
-        onChange={async () => {
-          await reload();
-          refresh();
-        }}
-      />
     </div>
+  );
+}
+
+function ResyncButton({ days, onDone }: { days: number; onDone: () => void }) {
+  const [busy, setBusy] = useState(false);
+  return (
+    <button
+      disabled={busy}
+      onClick={async () => {
+        setBusy(true);
+        try {
+          await api().resync(days);
+          onDone();
+        } finally {
+          setBusy(false);
+        }
+      }}
+      className="rounded-xl bg-white px-3 py-1.5 text-sm font-medium text-slate-600 ring-1 ring-slate-200 hover:bg-slate-50 disabled:opacity-60"
+    >
+      {busy ? "Re-syncing…" : "Re-sync with current rules"}
+    </button>
   );
 }
 
@@ -78,13 +95,12 @@ function UnassignedSuggestions({
 
   if (suggestions.length === 0) {
     return (
-      <Card>
-        <Title>Unassigned usage</Title>
-        <Text>
-          Nothing unassigned in the current range — all tracked time maps to a
-          client or internal work. 🎉
-        </Text>
-      </Card>
+      <Panel>
+        <PanelTitle title="Unassigned usage" />
+        <p className="text-sm text-slate-400">
+          Everything tracked maps to a client or internal work. 🎉
+        </p>
+      </Panel>
     );
   }
 
@@ -92,43 +108,34 @@ function UnassignedSuggestions({
     const choice = assign[s.label] ?? "";
     const billable = choice !== "" && choice !== "internal";
     const clientId = billable ? Number(choice) : null;
-    await fetch("/api/rules", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        ...s.match,
-        clientId,
-        billable,
-        priority: 50, // user-created mappings win over seeded defaults
-      }),
+    await api().createRule({
+      ...s.match,
+      clientId,
+      billable,
+      priority: 50, // user-created mappings win over seeded defaults
     });
     onCreated();
   }
 
   return (
-    <Card>
-      <Title>Unassigned usage</Title>
-      <Text>
-        These apps/sites aren&apos;t mapped yet. Assign each to a client (or mark
-        internal) to capture it going forward.
-      </Text>
-      <div className="mt-4 divide-y divide-gray-100">
+    <Panel>
+      <PanelTitle
+        title="Unassigned usage"
+        subtitle="Assign each to a client (or mark internal) to capture it going forward."
+      />
+      <div className="divide-y divide-slate-100">
         {suggestions.slice(0, 12).map((s) => (
-          <div
-            key={s.label}
-            className="flex flex-wrap items-center gap-3 py-2"
-          >
+          <div key={s.label} className="flex flex-wrap items-center gap-3 py-2.5">
             <div className="min-w-0 flex-1">
-              <div className="truncate font-medium text-gray-900">
+              <div className="truncate font-medium text-slate-700">
                 {s.label}
               </div>
-              <div className="text-xs text-gray-400">
-                {s.kind === "site" ? `domain ${s.match.urlDomain}` : "app"} ·{" "}
-                {formatHours(secondsToHours(s.seconds))}
+              <div className="text-xs text-slate-400">
+                {describeMatch(s)} · {formatHours(secondsToHours(s.seconds))}
               </div>
             </div>
             <select
-              className="rounded-md border border-gray-300 px-2 py-1.5 text-sm"
+              className="rounded-lg border border-slate-200 px-2 py-1.5 text-sm text-slate-700"
               value={assign[s.label] ?? ""}
               onChange={(e) =>
                 setAssign((a) => ({ ...a, [s.label]: e.target.value }))
@@ -145,15 +152,21 @@ function UnassignedSuggestions({
             <button
               disabled={(assign[s.label] ?? "") === ""}
               onClick={() => createRule(s)}
-              className="rounded-md bg-blue-600 px-3 py-1.5 text-sm font-medium text-white disabled:cursor-not-allowed disabled:bg-gray-300"
+              className="rounded-lg bg-violet-600 px-3 py-1.5 text-sm font-medium text-white disabled:cursor-not-allowed disabled:bg-slate-300"
             >
               Add rule
             </button>
           </div>
         ))}
       </div>
-    </Card>
+    </Panel>
   );
+}
+
+function describeMatch(s: RuleSuggestion): string {
+  if (s.kind === "site") return `site ${s.match.urlDomain}`;
+  if (s.kind === "title") return "tab / chat title";
+  return "app";
 }
 
 /* ---------------- Clients ---------------- */
@@ -171,51 +184,43 @@ function ClientsCard({
   async function addClient(e: React.FormEvent) {
     e.preventDefault();
     if (!name.trim()) return;
-    await fetch("/api/clients", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ name: name.trim(), billableRate: Number(rate) || 0 }),
-    });
+    await api().createClient({ name: name.trim(), billableRate: Number(rate) || 0 });
     setName("");
     setRate("");
     onChange();
   }
 
   async function saveRate(id: number, billableRate: number) {
-    await fetch(`/api/clients/${id}`, {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ billableRate }),
-    });
+    await api().updateClient(id, { billableRate });
     onChange();
   }
 
   async function remove(id: number) {
-    await fetch(`/api/clients/${id}`, { method: "DELETE" });
+    await api().deleteClient(id);
     onChange();
   }
 
   return (
-    <Card>
-      <Title>Clients &amp; rates</Title>
-      <div className="mt-4 space-y-2">
+    <Panel>
+      <PanelTitle title="Clients & rates" />
+      <div className="space-y-2">
         {clients.map((c) => (
           <div key={c.id} className="flex items-center gap-3">
-            <div className="flex-1 font-medium text-gray-900">{c.name}</div>
-            <div className="flex items-center gap-1 text-sm text-gray-500">
-              <span>{formatCurrency(0).replace(/[\d.,]/g, "").trim()}</span>
+            <div className="flex-1 font-medium text-slate-700">{c.name}</div>
+            <div className="flex items-center gap-1 text-sm text-slate-400">
+              <span>$</span>
               <input
                 type="number"
                 defaultValue={c.billableRate}
                 min={0}
-                className="w-24 rounded-md border border-gray-300 px-2 py-1 text-right text-sm"
+                className="w-24 rounded-lg border border-slate-200 px-2 py-1 text-right text-sm text-slate-700"
                 onBlur={(e) => saveRate(c.id, Number(e.target.value) || 0)}
               />
               <span>/hr</span>
             </div>
             <button
               onClick={() => remove(c.id)}
-              className="text-sm text-gray-400 hover:text-red-600"
+              className="text-sm text-slate-300 hover:text-rose-500"
               aria-label={`Delete ${c.name}`}
             >
               Delete
@@ -226,33 +231,33 @@ function ClientsCard({
 
       <form onSubmit={addClient} className="mt-4 flex flex-wrap items-end gap-2">
         <div>
-          <label className="block text-xs text-gray-500">Client name</label>
+          <label className="block text-xs text-slate-400">Client name</label>
           <input
             value={name}
             onChange={(e) => setName(e.target.value)}
             placeholder="Acme Corp"
-            className="rounded-md border border-gray-300 px-2 py-1.5 text-sm"
+            className="rounded-lg border border-slate-200 px-2 py-1.5 text-sm"
           />
         </div>
         <div>
-          <label className="block text-xs text-gray-500">Rate / hr</label>
+          <label className="block text-xs text-slate-400">Rate / hr</label>
           <input
             value={rate}
             onChange={(e) => setRate(e.target.value)}
             type="number"
             min={0}
             placeholder="150"
-            className="w-28 rounded-md border border-gray-300 px-2 py-1.5 text-sm"
+            className="w-28 rounded-lg border border-slate-200 px-2 py-1.5 text-sm"
           />
         </div>
         <button
           type="submit"
-          className="rounded-md bg-gray-900 px-3 py-1.5 text-sm font-medium text-white"
+          className="rounded-lg bg-slate-800 px-3 py-1.5 text-sm font-medium text-white"
         >
           Add client
         </button>
       </form>
-    </Card>
+    </Panel>
   );
 }
 
@@ -268,7 +273,7 @@ function RulesCard({
   onChange: () => void;
 }) {
   async function remove(id: number) {
-    await fetch(`/api/rules/${id}`, { method: "DELETE" });
+    await api().deleteRule(id);
     onChange();
   }
 
@@ -281,46 +286,39 @@ function RulesCard({
   }
 
   return (
-    <Card>
-      <Title>Mapping rules</Title>
-      <Text>
-        Evaluated top-to-bottom by priority; the first match wins. Rules you add
-        from suggestions get higher priority than the seeded defaults.
-      </Text>
-      <div className="mt-4 space-y-1">
+    <Panel>
+      <PanelTitle
+        title="Mapping rules"
+        subtitle="First match wins (lowest priority number first). Rules from suggestions outrank seeded defaults."
+      />
+      <div className="space-y-1">
         {[...rules]
           .sort((a, b) => a.priority - b.priority)
           .map((r) => (
             <div
               key={r.id}
-              className="flex flex-wrap items-center gap-3 rounded-md border border-gray-100 px-3 py-2 text-sm"
+              className="flex flex-wrap items-center gap-3 rounded-xl px-3 py-2 text-sm ring-1 ring-slate-100"
             >
-              <span className="rounded bg-gray-100 px-1.5 py-0.5 text-xs text-gray-500">
+              <span className="rounded bg-slate-100 px-1.5 py-0.5 text-xs text-slate-400">
                 p{r.priority}
               </span>
-              <span className="font-mono text-gray-700">{describe(r)}</span>
-              <span className="text-gray-400">→</span>
-              <span className="font-medium text-gray-900">
+              <span className="font-mono text-slate-600">{describe(r)}</span>
+              <span className="text-slate-300">→</span>
+              <span className="font-medium text-slate-700">
                 {clientName(r.clientId)}
               </span>
-              <span
-                className={
-                  r.billable
-                    ? "rounded bg-emerald-50 px-1.5 py-0.5 text-xs text-emerald-700"
-                    : "rounded bg-gray-100 px-1.5 py-0.5 text-xs text-gray-500"
-                }
-              >
+              <Pill tone={r.billable ? "good" : "muted"}>
                 {r.billable ? "billable" : "non-billable"}
-              </span>
+              </Pill>
               <button
                 onClick={() => remove(r.id)}
-                className="ml-auto text-gray-400 hover:text-red-600"
+                className="ml-auto text-slate-300 hover:text-rose-500"
               >
                 Delete
               </button>
             </div>
           ))}
       </div>
-    </Card>
+    </Panel>
   );
 }

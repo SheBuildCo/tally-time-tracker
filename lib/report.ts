@@ -1,35 +1,106 @@
-// Orchestration: pull usage from ActivityWatch, categorize it with the stored
-// rules, and aggregate it for the dashboard. This is the single entry point the
-// API routes call so the AW + categorize + analytics wiring lives in one place.
+// Orchestration: assemble the dashboard's data from the persisted rollup
+// (history) plus a live recompute of the current day, then aggregate it. This is
+// the single entry point the API routes / Electron IPC handlers call, so all the
+// ingest + categorize + analytics wiring lives in one place.
 
-import { getUsageEvents, lastNDays, type DateRange } from "./activitywatch";
-import { categorizeAll, suggestRules, type RuleSuggestion } from "./categorize";
-import { buildSummary, type AnalyticsSummary } from "./analytics";
-import { listClients, listRules } from "./db";
+import { suggestRules, type RuleSuggestion } from "./categorize";
+import {
+  buildClientDetail,
+  buildDailyTotals,
+  buildSummary,
+  type AnalyticsSummary,
+  type ClientDetail,
+  type DailyTotalRow,
+} from "./analytics";
+import { listClients } from "./db";
+import {
+  dayStrings,
+  ensureDayRows,
+  getRangeRows,
+  rowsToCategorized,
+} from "./ingest";
 
-export interface Report extends AnalyticsSummary {
-  range: { start: string; end: string; days: number };
-  suggestions: RuleSuggestion[];
+export interface RangeMeta {
+  start: string; // first day (YYYY-MM-DD)
+  end: string; // last day (YYYY-MM-DD)
+  days: number;
 }
 
-/** Build the full dashboard report for the last `days` days. */
-export async function buildReport(days = 7): Promise<Report> {
-  const range: DateRange = lastNDays(days);
-  const events = await getUsageEvents(range);
-  const rules = listRules();
-  const clients = listClients();
+export interface Report extends AnalyticsSummary {
+  range: RangeMeta;
+  suggestions: RuleSuggestion[];
+  trackerAvailable: boolean;
+}
 
-  const categorized = categorizeAll(events, rules);
+function rangeMeta(days: number): RangeMeta {
+  const ds = dayStrings(days);
+  return { start: ds[0], end: ds[ds.length - 1], days };
+}
+
+/** Full dashboard report for the last `days` days. */
+export async function buildReport(days = 7): Promise<Report> {
+  const { rows, trackerAvailable } = await getRangeRows(days);
+  const categorized = rowsToCategorized(rows);
+  const clients = listClients();
   const summary = buildSummary(categorized, clients);
   const suggestions = suggestRules(categorized);
-
   return {
     ...summary,
-    range: {
-      start: range.start.toISOString(),
-      end: range.end.toISOString(),
-      days,
-    },
+    range: rangeMeta(days),
     suggestions,
+    trackerAvailable,
+  };
+}
+
+export interface ClientReport extends ClientDetail {
+  range: RangeMeta;
+  trackerAvailable: boolean;
+}
+
+/** One client's breakdown over the last `days` days (null if unknown client). */
+export async function buildClientReport(
+  clientId: number,
+  days = 7,
+): Promise<ClientReport | null> {
+  const client = listClients().find((c) => c.id === clientId);
+  if (!client) return null;
+  const { rows, trackerAvailable } = await getRangeRows(days);
+  const categorized = rowsToCategorized(rows);
+  const detail = buildClientDetail(categorized, client);
+  return { ...detail, range: rangeMeta(days), trackerAvailable };
+}
+
+export interface DailyReport {
+  rows: DailyTotalRow[];
+  range: RangeMeta;
+  trackerAvailable: boolean;
+}
+
+/** Daily Totals table data for the last `days` days. */
+export async function buildDailyReport(days = 7): Promise<DailyReport> {
+  const { rows, trackerAvailable } = await getRangeRows(days);
+  const categorized = rowsToCategorized(rows);
+  const clients = listClients();
+  return {
+    rows: buildDailyTotals(categorized, clients),
+    range: rangeMeta(days),
+    trackerAvailable,
+  };
+}
+
+/** One client's detail for a single (possibly historical) day. */
+export async function buildClientDay(
+  clientId: number,
+  day: string,
+): Promise<ClientReport | null> {
+  const client = listClients().find((c) => c.id === clientId);
+  if (!client) return null;
+  const { rows, trackerAvailable } = await ensureDayRows(day);
+  const categorized = rowsToCategorized(rows);
+  const detail = buildClientDetail(categorized, client);
+  return {
+    ...detail,
+    range: { start: day, end: day, days: 1 },
+    trackerAvailable,
   };
 }

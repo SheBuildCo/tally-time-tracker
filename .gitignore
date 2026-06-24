@@ -8,6 +8,11 @@
 /out/
 next-env.d.ts
 
+# electron build outputs
+/dist/
+/dist-electron/
+/app/_api_disabled/
+
 # production
 /build
 

@@ -34,6 +34,82 @@ export function hostMatchesDomain(host: string, domain: string): boolean {
   return h === d || h.endsWith(`.${d}`);
 }
 
+/** Escape a string so it can be embedded literally in a RegExp. */
+export function escapeRegExp(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/**
+ * Chromium/Gecko browser executables we recognise. Comet (the user's browser) is
+ * included so its tab activity is treated like any other browser. Matching is
+ * case-insensitive against the window watcher's `app` field.
+ */
+export const BROWSER_APPS = new Set([
+  "comet.exe",
+  "comet",
+  "chrome.exe",
+  "google chrome",
+  "msedge.exe",
+  "microsoft edge",
+  "firefox.exe",
+  "firefox",
+  "brave.exe",
+  "brave",
+  "opera.exe",
+  "opera",
+  "vivaldi.exe",
+  "vivaldi",
+  "arc.exe",
+  "arc",
+]);
+
+export function isBrowserApp(app: string): boolean {
+  return BROWSER_APPS.has(app.toLowerCase());
+}
+
+/**
+ * Browser/app name fragments that appear as a trailing segment of a window title
+ * (e.g. "Inbox - me@co - Comet", "Chat | Jane | Microsoft Teams"). Stripped by
+ * `cleanTitle` so the remaining text is the actual tab/document/chat.
+ */
+const TITLE_SUFFIXES = [
+  "Comet",
+  "Google Chrome",
+  "Chromium",
+  "Microsoft Edge",
+  "Mozilla Firefox",
+  "Firefox",
+  "Brave",
+  "Opera",
+  "Vivaldi",
+  "Arc",
+  "Microsoft Teams",
+  "Microsoft​ Teams", // teams sometimes uses a zero-width space
+];
+
+/**
+ * Turn a raw window title into a readable activity label: drop leading unread
+ * counts like "(3) " and any trailing " - <browser>" / " | <app>" chrome, so we
+ * keep the specific tab/chat/document the user was actually in.
+ */
+export function cleanTitle(title: string | undefined): string {
+  let t = (title ?? "").replace(/\s+/g, " ").trim();
+  if (!t) return "";
+  t = t.replace(/^\(\d+\)\s*/, ""); // leading unread count
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const suffix of TITLE_SUFFIXES) {
+      const re = new RegExp(`\\s*[-—|]\\s*${escapeRegExp(suffix)}\\s*$`, "i");
+      if (re.test(t)) {
+        t = t.replace(re, "").trim();
+        changed = true;
+      }
+    }
+  }
+  return t.trim();
+}
+
 /** Does a single rule's match clause apply to this event? */
 export function ruleMatches(match: RuleMatch, event: UsageEvent): boolean {
   // An empty match clause never matches (guards against catch-all rules slipping in).
@@ -97,21 +173,29 @@ export function categorizeAll(
 }
 
 /**
- * A short, human-friendly label for what an event "is" — the web host when it's
- * a browser tab, otherwise the app name. Used for app/site analytics and for
- * suggesting rules.
+ * Coarse "where" label — the web host when it's a browser tab, otherwise the app
+ * name. Used for the high-level apps/sites rollup.
  */
-export function activityLabel(event: UsageEvent): string {
+export function appLabel(event: UsageEvent): string {
   const host = hostOf(event.url);
   return host || event.app;
 }
 
+/**
+ * Fine "what" label — the specific tab/chat/document from the window title, then
+ * the host, then the app. This is what surfaces per-tab and per-chat detail (e.g.
+ * an individual client conversation inside Teams) instead of just "comet.exe".
+ */
+export function activityLabel(event: UsageEvent): string {
+  return cleanTitle(event.title) || hostOf(event.url) || event.app;
+}
+
 export interface RuleSuggestion {
-  /** A ready-to-save match clause (urlDomain for sites, app for native apps). */
+  /** A ready-to-save match clause (urlDomain, titleRegex, or app). */
   match: RuleMatch;
-  label: string; // the host or app this covers
+  label: string; // the host, activity title, or app this covers
   seconds: number; // total unassigned time this would capture
-  kind: "site" | "app";
+  kind: "site" | "title" | "app";
 }
 
 /**
@@ -125,18 +209,25 @@ export function suggestRules(
   minSeconds = 60,
 ): RuleSuggestion[] {
   const sites = new Map<string, number>();
+  const titles = new Map<string, number>();
   const apps = new Map<string, number>();
 
   for (const c of categorized) {
     if (c.matchedRuleId !== null) continue; // only unassigned time
+    const sec = c.event.duration;
     const host = hostOf(c.event.url);
     if (host) {
-      sites.set(host, (sites.get(host) ?? 0) + c.event.duration);
+      // A real URL (browser with the web extension) — map by domain.
+      sites.set(host, (sites.get(host) ?? 0) + sec);
+    } else if (isBrowserApp(c.event.app)) {
+      // A browser without a URL (e.g. Comet) — map by the tab/chat title, which
+      // is the only signal we have and the granularity the user wants.
+      const title = cleanTitle(c.event.title);
+      if (title) titles.set(title, (titles.get(title) ?? 0) + sec);
+      else apps.set(c.event.app, (apps.get(c.event.app) ?? 0) + sec);
     } else {
-      apps.set(
-        c.event.app,
-        (apps.get(c.event.app) ?? 0) + c.event.duration,
-      );
+      // A native app — map by app name.
+      apps.set(c.event.app, (apps.get(c.event.app) ?? 0) + sec);
     }
   }
 
@@ -148,6 +239,16 @@ export function suggestRules(
         label: host,
         seconds,
         kind: "site",
+      });
+    }
+  }
+  for (const [title, seconds] of titles) {
+    if (seconds >= minSeconds) {
+      suggestions.push({
+        match: { titleRegex: escapeRegExp(title) },
+        label: title,
+        seconds,
+        kind: "title",
       });
     }
   }

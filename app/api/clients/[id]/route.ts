@@ -1,5 +1,10 @@
 import { NextResponse } from "next/server";
-import { deleteClient, updateClient } from "@/lib/db";
+import {
+  NotFoundError,
+  patchClient,
+  removeClient,
+  ValidationError,
+} from "@/lib/handlers";
 
 export const dynamic = "force-dynamic";
 
@@ -7,28 +12,30 @@ export async function PATCH(
   request: Request,
   { params }: { params: { id: string } },
 ) {
-  const id = Number(params.id);
-  if (!Number.isInteger(id)) {
-    return NextResponse.json({ error: "invalid id" }, { status: 400 });
-  }
   const body = await request.json().catch(() => ({}));
-  const fields: Record<string, unknown> = {};
-  if (typeof body.name === "string") fields.name = body.name.trim();
-  if (body.billableRate !== undefined) fields.billableRate = Number(body.billableRate);
-  if (typeof body.color === "string") fields.color = body.color;
-  const client = updateClient(id, fields);
-  if (!client) return NextResponse.json({ error: "not found" }, { status: 404 });
-  return NextResponse.json({ client });
+  try {
+    return NextResponse.json(patchClient(Number(params.id), body));
+  } catch (err) {
+    if (err instanceof ValidationError) {
+      return NextResponse.json({ error: err.message }, { status: 400 });
+    }
+    if (err instanceof NotFoundError) {
+      return NextResponse.json({ error: err.message }, { status: 404 });
+    }
+    throw err;
+  }
 }
 
 export async function DELETE(
   _request: Request,
   { params }: { params: { id: string } },
 ) {
-  const id = Number(params.id);
-  if (!Number.isInteger(id)) {
-    return NextResponse.json({ error: "invalid id" }, { status: 400 });
+  try {
+    return NextResponse.json(removeClient(Number(params.id)));
+  } catch (err) {
+    if (err instanceof ValidationError) {
+      return NextResponse.json({ error: err.message }, { status: 400 });
+    }
+    throw err;
   }
-  deleteClient(id);
-  return NextResponse.json({ ok: true });
 }

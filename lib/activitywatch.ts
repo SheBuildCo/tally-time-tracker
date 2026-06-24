@@ -179,6 +179,8 @@ function knownBrowserApps(buckets: Record<string, AWBucket>): Set<string> {
     brave: ["brave.exe", "brave"],
     opera: ["opera.exe", "opera"],
     vivaldi: ["vivaldi.exe", "vivaldi"],
+    comet: ["comet.exe", "comet"],
+    arc: ["arc.exe", "arc"],
   };
   const apps = new Set<string>();
   for (const id of Object.keys(buckets)) {

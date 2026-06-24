@@ -1,10 +1,11 @@
 // Local per-user persistence (SQLite via better-sqlite3).
 //
 // Stores the things ActivityWatch doesn't know about: the firm's clients and
-// billable rates, and the mapping rules that attribute usage to them. Usage
-// events themselves are NOT stored here — they live in ActivityWatch and are
-// queried on demand — so this DB stays tiny and the source of truth for tracked
-// time remains the tracker.
+// billable rates, and the mapping rules that attribute usage to them. It also
+// keeps a per-day *rollup* of categorized usage (`daily_activity`) so history
+// survives, renders offline, and doesn't depend on ActivityWatch's own
+// retention. Raw events still originate in ActivityWatch; we persist the
+// aggregated result, recomputing the current day live (see lib/ingest.ts).
 
 import Database from "better-sqlite3";
 import fs from "node:fs";
@@ -45,7 +46,126 @@ function migrate(db: Database.Database): void {
       billable    INTEGER NOT NULL DEFAULT 1,
       priority    INTEGER NOT NULL DEFAULT 100
     );
+    -- Per-day rollup of categorized usage. client_id uses -1 for "no client"
+    -- (so the primary key works; SQLite treats NULLs as distinct). 'unassigned'
+    -- distinguishes "no rule matched" from an explicit null-client rule.
+    CREATE TABLE IF NOT EXISTS daily_activity (
+      day        TEXT NOT NULL,
+      client_id  INTEGER NOT NULL,        -- -1 = no client
+      app        TEXT NOT NULL,
+      activity   TEXT NOT NULL,           -- cleaned window title (fine label)
+      host       TEXT NOT NULL DEFAULT '',
+      billable   INTEGER NOT NULL DEFAULT 0,
+      unassigned INTEGER NOT NULL DEFAULT 0,
+      seconds    INTEGER NOT NULL DEFAULT 0,
+      PRIMARY KEY (day, client_id, app, activity, billable, unassigned)
+    );
+    -- Days whose rollup is complete (the day is over and was ingested).
+    CREATE TABLE IF NOT EXISTS day_finalized (
+      day          TEXT PRIMARY KEY,
+      finalized_at TEXT NOT NULL
+    );
   `);
+}
+
+/** The -1 sentinel used in daily_activity for "no client". */
+const NO_CLIENT = -1;
+
+export interface DailyActivityRow {
+  day: string;
+  clientId: number | null;
+  app: string;
+  activity: string;
+  host: string;
+  billable: boolean;
+  unassigned: boolean;
+  seconds: number;
+}
+
+interface DailyActivityDbRow {
+  day: string;
+  client_id: number;
+  app: string;
+  activity: string;
+  host: string;
+  billable: number;
+  unassigned: number;
+  seconds: number;
+}
+
+function toDailyRow(r: DailyActivityDbRow): DailyActivityRow {
+  return {
+    day: r.day,
+    clientId: r.client_id === NO_CLIENT ? null : r.client_id,
+    app: r.app,
+    activity: r.activity,
+    host: r.host,
+    billable: !!r.billable,
+    unassigned: !!r.unassigned,
+    seconds: r.seconds,
+  };
+}
+
+/** Replace a single day's rollup atomically (ingest recomputes the whole day). */
+export function replaceDayActivity(
+  day: string,
+  rows: DailyActivityRow[],
+): void {
+  const db = connect();
+  const del = db.prepare("DELETE FROM daily_activity WHERE day = ?");
+  const ins = db.prepare(
+    `INSERT INTO daily_activity
+       (day, client_id, app, activity, host, billable, unassigned, seconds)
+     VALUES (@day, @client_id, @app, @activity, @host, @billable, @unassigned, @seconds)`,
+  );
+  const tx = db.transaction((rs: DailyActivityRow[]) => {
+    del.run(day);
+    for (const r of rs) {
+      ins.run({
+        day,
+        client_id: r.clientId ?? NO_CLIENT,
+        app: r.app,
+        activity: r.activity,
+        host: r.host,
+        billable: r.billable ? 1 : 0,
+        unassigned: r.unassigned ? 1 : 0,
+        seconds: Math.round(r.seconds),
+      });
+    }
+  });
+  tx(rows);
+}
+
+/** Fetch stored rollup rows for an inclusive day range [startDay, endDay]. */
+export function getActivityRows(
+  startDay: string,
+  endDay: string,
+): DailyActivityRow[] {
+  return connect()
+    .prepare(
+      "SELECT * FROM daily_activity WHERE day >= ? AND day <= ? ORDER BY day",
+    )
+    .all(startDay, endDay)
+    .map((r) => toDailyRow(r as DailyActivityDbRow));
+}
+
+export function markFinalized(day: string, finalizedAt: string): void {
+  connect()
+    .prepare(
+      `INSERT INTO day_finalized (day, finalized_at) VALUES (?, ?)
+       ON CONFLICT(day) DO UPDATE SET finalized_at = excluded.finalized_at`,
+    )
+    .run(day, finalizedAt);
+}
+
+export function isFinalized(day: string): boolean {
+  return !!connect()
+    .prepare("SELECT 1 FROM day_finalized WHERE day = ?")
+    .get(day);
+}
+
+export function clearDayFinalized(day: string): void {
+  connect().prepare("DELETE FROM day_finalized WHERE day = ?").run(day);
 }
 
 // ---- row mapping ---------------------------------------------------------

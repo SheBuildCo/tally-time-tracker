@@ -1,171 +1,140 @@
 "use client";
 
-import {
-  AreaChart,
-  BarList,
-  Card,
-  DonutChart,
-  Flex,
-  Metric,
-  Text,
-  Title,
-} from "@tremor/react";
+import { BarChart, BarList, LineChart } from "@tremor/react";
 import LoadingGate from "@/components/LoadingGate";
+import {
+  CHART,
+  PageHeading,
+  Panel,
+  PanelTitle,
+  StatCard,
+} from "@/components/ui";
 import { formatCurrency, formatDayLabel, formatHours } from "@/lib/format";
 
 export default function OverviewPage() {
   return (
-    <div className="space-y-6">
-      <div>
-        <h1 className="text-2xl font-bold text-gray-900">Overview</h1>
-        <p className="text-sm text-gray-500">
-          Your tracked activity, mapped to clients and billables.
-        </p>
-      </div>
+    <div>
+      <PageHeading
+        title="Overview"
+        subtitle="Your tracked activity, mapped to clients and billables."
+      />
 
       <LoadingGate>
         {(report) => {
-          const dailyData = report.daily.map((d) => ({
+          const daily = report.daily.map((d) => ({
             date: formatDayLabel(d.date),
             Billable: d.billableHours,
             "Non-billable": d.nonBillableHours,
+            Total:
+              Math.round((d.billableHours + d.nonBillableHours) * 100) / 100,
           }));
-
-          const split = [
-            { name: "Billable", value: report.billableHours },
-            { name: "Non-billable", value: report.nonBillableHours },
-          ];
 
           const topClients = report.clients
             .filter((c) => c.hours > 0)
             .slice(0, 6)
             .map((c) => ({ name: c.name, value: c.hours }));
 
-          const topApps = report.apps
+          const topActivities = report.activities
             .slice(0, 6)
             .map((a) => ({ name: a.label, value: a.hours }));
 
+          const billablePct =
+            report.totalHours > 0
+              ? Math.round((report.billableHours / report.totalHours) * 100)
+              : 0;
+
           return (
-            <div className="space-y-6">
-              {/* KPI cards */}
+            <div className="space-y-5">
               <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-                <KpiCard
+                <StatCard
                   label="Active time"
                   value={formatHours(report.totalHours)}
+                  caption="excludes idle time"
                 />
-                <KpiCard
+                <StatCard
                   label="Billable time"
                   value={formatHours(report.billableHours)}
-                  accent="text-emerald-600"
+                  caption={`${billablePct}% of tracked`}
+                  tone="good"
                 />
-                <KpiCard
+                <StatCard
                   label="Billable value"
                   value={formatCurrency(report.billableAmount)}
-                  accent="text-emerald-600"
+                  caption="across all clients"
+                  tone="good"
                 />
-                <KpiCard
+                <StatCard
                   label="Unassigned"
                   value={formatHours(report.unassignedHours)}
-                  accent={
+                  caption={
                     report.unassignedHours > 0
-                      ? "text-amber-600"
-                      : "text-gray-900"
+                      ? "review in Settings"
+                      : "all mapped"
                   }
-                  hint={
-                    report.unassignedHours > 0
-                      ? "Review in Settings"
-                      : undefined
-                  }
+                  tone={report.unassignedHours > 0 ? "warn" : "default"}
                 />
               </div>
 
-              {/* Trend + split */}
-              <div className="grid gap-4 lg:grid-cols-3">
-                <Card className="lg:col-span-2">
-                  <Title>Daily activity</Title>
-                  <Text>Billable vs non-billable hours per day</Text>
-                  <AreaChart
-                    className="mt-4 h-64"
-                    data={dailyData}
+              <div className="grid gap-4 lg:grid-cols-2">
+                <Panel>
+                  <PanelTitle
+                    title="Activity by day"
+                    subtitle="Billable vs non-billable hours"
+                  />
+                  <BarChart
+                    className="h-72"
+                    data={daily}
                     index="date"
                     categories={["Billable", "Non-billable"]}
-                    colors={["emerald", "gray"]}
-                    valueFormatter={(v) => formatHours(v)}
-                    showLegend
+                    colors={[CHART.billable, CHART.nonBillable]}
+                    valueFormatter={(v: number) => formatHours(v)}
                     stack
+                    showLegend
                   />
-                </Card>
-                <Card>
-                  <Title>Billable split</Title>
-                  <DonutChart
-                    className="mt-4 h-44"
-                    data={split}
-                    category="value"
-                    index="name"
-                    colors={["emerald", "gray"]}
-                    valueFormatter={(v) => formatHours(v)}
+                </Panel>
+                <Panel>
+                  <PanelTitle
+                    title="Total hours trend"
+                    subtitle="Active hours per day"
                   />
-                  <Flex className="mt-4">
-                    <Text>Billable share</Text>
-                    <Text>
-                      {report.totalHours > 0
-                        ? Math.round(
-                            (report.billableHours / report.totalHours) * 100,
-                          )
-                        : 0}
-                      %
-                    </Text>
-                  </Flex>
-                </Card>
+                  <LineChart
+                    className="h-72"
+                    data={daily}
+                    index="date"
+                    categories={["Total"]}
+                    colors={[CHART.accent]}
+                    valueFormatter={(v: number) => formatHours(v)}
+                    showLegend={false}
+                    curveType="monotone"
+                  />
+                </Panel>
               </div>
 
-              {/* Top clients + apps */}
               <div className="grid gap-4 lg:grid-cols-2">
-                <Card>
-                  <Title>Top clients</Title>
-                  <Text>Active hours by client</Text>
+                <Panel>
+                  <PanelTitle title="Top clients" subtitle="Active hours" />
                   <BarList
-                    className="mt-4"
                     data={topClients}
                     valueFormatter={(v: number) => formatHours(v)}
-                    color="blue"
+                    color={CHART.billable}
                   />
-                </Card>
-                <Card>
-                  <Title>Top apps &amp; sites</Title>
-                  <Text>Where your time went</Text>
+                </Panel>
+                <Panel>
+                  <PanelTitle
+                    title="Top activities"
+                    subtitle="Specific tabs, chats & apps"
+                  />
                   <BarList
-                    className="mt-4"
-                    data={topApps}
+                    data={topActivities}
                     valueFormatter={(v: number) => formatHours(v)}
-                    color="indigo"
+                    color={CHART.accent}
                   />
-                </Card>
+                </Panel>
               </div>
             </div>
           );
         }}
       </LoadingGate>
     </div>
-  );
-}
-
-function KpiCard({
-  label,
-  value,
-  accent = "text-gray-900",
-  hint,
-}: {
-  label: string;
-  value: string;
-  accent?: string;
-  hint?: string;
-}) {
-  return (
-    <Card>
-      <Text>{label}</Text>
-      <Metric className={accent}>{value}</Metric>
-      {hint ? <Text className="mt-1 text-amber-600">{hint}</Text> : null}
-    </Card>
   );
 }

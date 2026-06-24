@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { deleteRule } from "@/lib/db";
+import { removeRule, ValidationError } from "@/lib/handlers";
 
 export const dynamic = "force-dynamic";
 
@@ -7,10 +7,12 @@ export async function DELETE(
   _request: Request,
   { params }: { params: { id: string } },
 ) {
-  const id = Number(params.id);
-  if (!Number.isInteger(id)) {
-    return NextResponse.json({ error: "invalid id" }, { status: 400 });
+  try {
+    return NextResponse.json(removeRule(Number(params.id)));
+  } catch (err) {
+    if (err instanceof ValidationError) {
+      return NextResponse.json({ error: err.message }, { status: 400 });
+    }
+    throw err;
   }
-  deleteRule(id);
-  return NextResponse.json({ ok: true });
 }

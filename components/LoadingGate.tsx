@@ -1,19 +1,20 @@
 "use client";
 
 import { useDashboard } from "./DashboardContext";
+import { EmptyState } from "./ui";
 import type { Report } from "@/lib/report";
 
 /**
- * Renders `children(report)` once analytics are loaded. Shows a loading
- * skeleton while fetching and a neutral message when the tracker is down or the
- * range has no data, so individual pages don't each re-implement these states.
+ * Renders `children(report)` once analytics are loaded. Shows a soft loading
+ * skeleton while fetching and a neutral message when there's no data, so pages
+ * don't each re-implement these states.
  */
 export default function LoadingGate({
   children,
 }: {
   children: (report: Report) => React.ReactNode;
 }) {
-  const { report, loading, error, trackerUnavailable } = useDashboard();
+  const { report, loading, error } = useDashboard();
 
   if (loading && !report) {
     return (
@@ -21,7 +22,7 @@ export default function LoadingGate({
         {Array.from({ length: 4 }).map((_, i) => (
           <div
             key={i}
-            className="h-28 animate-pulse rounded-xl border border-gray-200 bg-white"
+            className="h-28 animate-pulse rounded-2xl bg-white/60 ring-1 ring-slate-100"
           />
         ))}
       </div>
@@ -29,21 +30,16 @@ export default function LoadingGate({
   }
 
   if (!report) {
-    // The banner in Shell already explains tracker/errors; keep this quiet.
-    if (trackerUnavailable || error) return null;
-    return (
-      <div className="rounded-xl border border-gray-200 bg-white p-8 text-center text-sm text-gray-500">
-        No tracked activity in this range yet.
-      </div>
-    );
+    if (error) return null; // banner in Shell explains it
+    return <EmptyState>No tracked activity yet.</EmptyState>;
   }
 
   if (report.totalHours === 0) {
     return (
-      <div className="rounded-xl border border-gray-200 bg-white p-8 text-center text-sm text-gray-500">
+      <EmptyState>
         No active time recorded in this range. Once you use your apps with
         ActivityWatch running, usage will appear here.
-      </div>
+      </EmptyState>
     );
   }
 

@@ -8,13 +8,14 @@ import {
   useMemo,
   useState,
 } from "react";
+import { api } from "@/lib/client";
 import type { Report } from "@/lib/report";
 
 interface DashboardState {
   report: Report | null;
   loading: boolean;
   error: string | null;
-  trackerUnavailable: boolean;
+  trackerAvailable: boolean;
   days: number;
   setDays: (d: number) => void;
   refresh: () => void;
@@ -24,15 +25,15 @@ const DashboardCtx = createContext<DashboardState | null>(null);
 
 export const RANGE_OPTIONS = [
   { label: "Today", days: 1 },
-  { label: "7 days", days: 7 },
-  { label: "30 days", days: 30 },
+  { label: "Last 7 days", days: 7 },
+  { label: "Last 30 days", days: 30 },
 ];
 
 export function DashboardProvider({ children }: { children: React.ReactNode }) {
   const [report, setReport] = useState<Report | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [trackerUnavailable, setTrackerUnavailable] = useState(false);
+  const [trackerAvailable, setTrackerAvailable] = useState(true);
   const [days, setDays] = useState(7);
   const [nonce, setNonce] = useState(0);
 
@@ -42,21 +43,18 @@ export function DashboardProvider({ children }: { children: React.ReactNode }) {
     let cancelled = false;
     setLoading(true);
     setError(null);
-    setTrackerUnavailable(false);
-    fetch(`/api/analytics?days=${days}`)
-      .then(async (res) => {
-        const data = await res.json();
+    api()
+      .getAnalytics(days)
+      .then((data) => {
         if (cancelled) return;
-        if (!res.ok) {
-          setError(data.error ?? "Failed to load analytics");
-          setTrackerUnavailable(!!data.trackerUnavailable);
-          setReport(null);
-          return;
-        }
-        setReport(data as Report);
+        setReport(data);
+        setTrackerAvailable(data.trackerAvailable);
       })
-      .catch((err) => {
-        if (!cancelled) setError(err.message ?? "Network error");
+      .catch((err: Error) => {
+        if (!cancelled) {
+          setError(err.message ?? "Failed to load analytics");
+          setReport(null);
+        }
       })
       .finally(() => {
         if (!cancelled) setLoading(false);
@@ -71,12 +69,12 @@ export function DashboardProvider({ children }: { children: React.ReactNode }) {
       report,
       loading,
       error,
-      trackerUnavailable,
+      trackerAvailable,
       days,
       setDays,
       refresh,
     }),
-    [report, loading, error, trackerUnavailable, days, refresh],
+    [report, loading, error, trackerAvailable, days, refresh],
   );
 
   return <DashboardCtx.Provider value={value}>{children}</DashboardCtx.Provider>;
