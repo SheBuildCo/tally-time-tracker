@@ -115,6 +115,82 @@ describe("suggestRules", () => {
   });
 });
 
+describe("suggestRules with enrichment", () => {
+  const events = [
+    usage({ url: "https://maasgroup.looplogics.com/x", duration: 1200 }),
+    usage({ url: "https://acme.looplogics.com/y", duration: 900 }),
+    usage({ url: "https://app.asana.com/z", duration: 600 }),
+  ];
+  const categorized = categorizeAll(events, rules);
+
+  const enrich = {
+    get: (raw: string) => {
+      if (raw === "maasgroup.looplogics.com")
+        return {
+          cleanedLabel: "MaasGroup — LoopLogics",
+          isPerClientSubdomain: true,
+          suggestedUrlDomain: "maasgroup.looplogics.com",
+          suggestedClientName: "Acme Corp",
+          confidence: 0.95,
+        };
+      if (raw === "acme.looplogics.com")
+        return {
+          cleanedLabel: "Acme — LoopLogics",
+          isPerClientSubdomain: true,
+          suggestedUrlDomain: "acme.looplogics.com",
+          suggestedClientName: null,
+          confidence: 0.6,
+        };
+      if (raw === "app.asana.com")
+        return {
+          cleanedLabel: "Asana",
+          isPerClientSubdomain: false,
+          suggestedUrlDomain: null,
+          suggestedClientName: null,
+          confidence: 0.2,
+        };
+      return undefined;
+    },
+  };
+
+  it("keeps per-client subdomains as distinct full-host rules", () => {
+    const s = suggestRules(categorized, 60, enrich);
+    const maas = s.find((x) => x.label === "maasgroup.looplogics.com");
+    const acme = s.find((x) => x.label === "acme.looplogics.com");
+    expect(maas?.match.urlDomain).toBe("maasgroup.looplogics.com");
+    expect(acme?.match.urlDomain).toBe("acme.looplogics.com");
+    // two separate rules, not one collapsed looplogics.com
+    expect(maas?.match.urlDomain).not.toBe(acme?.match.urlDomain);
+    expect(maas?.cleanedLabel).toBe("MaasGroup — LoopLogics");
+    expect(maas?.suggestedClientName).toBe("Acme Corp");
+    expect(maas?.confidence).toBe(0.95);
+  });
+
+  it("still collapses generic shared apps to the registrable domain", () => {
+    const s = suggestRules(categorized, 60, enrich);
+    const asana = s.find((x) => x.label === "app.asana.com");
+    expect(asana?.match.urlDomain).toBe("asana.com");
+  });
+
+  it("without enrichment behaves exactly as before (collapses)", () => {
+    const s = suggestRules(categorized, 60);
+    const maas = s.find((x) => x.label === "maasgroup.looplogics.com");
+    const acme = s.find((x) => x.label === "acme.looplogics.com");
+    expect(maas?.match.urlDomain).toBe("looplogics.com");
+    expect(acme?.match.urlDomain).toBe("looplogics.com");
+    expect(maas?.cleanedLabel).toBeUndefined();
+  });
+
+  it("per-client rules do not cross-match", () => {
+    expect(
+      hostMatchesDomain("maasgroup.looplogics.com", "maasgroup.looplogics.com"),
+    ).toBe(true);
+    expect(
+      hostMatchesDomain("acme.looplogics.com", "maasgroup.looplogics.com"),
+    ).toBe(false);
+  });
+});
+
 describe("registrableDomain", () => {
   it("reduces deep subdomains to the registrable domain", () => {
     expect(registrableDomain("app.asana.com")).toBe("asana.com");

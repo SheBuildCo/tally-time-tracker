@@ -3,7 +3,12 @@
 // the single entry point the API routes / Electron IPC handlers call, so all the
 // ingest + categorize + analytics wiring lives in one place.
 
-import { suggestRules, type RuleSuggestion } from "./categorize";
+import {
+  suggestRules,
+  type EnrichmentLookup,
+  type RuleSuggestion,
+} from "./categorize";
+import { ENRICH_MODEL } from "./enrich";
 import {
   buildClientDetail,
   buildDailyTotals,
@@ -12,7 +17,7 @@ import {
   type ClientDetail,
   type DailyTotalRow,
 } from "./analytics";
-import { listClients } from "./db";
+import { getCleanupCache, listClients } from "./db";
 import {
   dayStrings,
   ensureDayRows,
@@ -37,13 +42,35 @@ function rangeMeta(days: number): RangeMeta {
   return { start: ds[0], end: ds[ds.length - 1], days };
 }
 
+/**
+ * Build an enrichment lookup from the cached LLM cleanups (cache-only — no
+ * network). Once a cleanup has run, every report reflects cleaned labels and
+ * correctly-scoped per-client subdomains with zero API calls.
+ */
+function cachedEnrichment(): EnrichmentLookup {
+  const cache = getCleanupCache(ENRICH_MODEL);
+  return {
+    get: (raw) => {
+      const r = cache.get(raw);
+      if (!r) return undefined;
+      return {
+        cleanedLabel: r.cleanedLabel,
+        isPerClientSubdomain: r.isPerClient,
+        suggestedUrlDomain: r.suggestedDomain,
+        suggestedClientName: r.suggestedClientName,
+        confidence: r.confidence,
+      };
+    },
+  };
+}
+
 /** Full dashboard report for the last `days` days. */
 export async function buildReport(days = 7): Promise<Report> {
   const { rows, trackerAvailable } = await getRangeRows(days);
   const categorized = rowsToCategorized(rows);
   const clients = listClients();
   const summary = buildSummary(categorized, clients);
-  const suggestions = suggestRules(categorized);
+  const suggestions = suggestRules(categorized, 60, cachedEnrichment());
   return {
     ...summary,
     range: rangeMeta(days),

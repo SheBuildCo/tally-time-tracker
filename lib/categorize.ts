@@ -196,6 +196,91 @@ export interface RuleSuggestion {
   label: string; // the host, activity title, or app this covers
   seconds: number; // total unassigned time this would capture
   kind: "site" | "title" | "app";
+  // Optional LLM-cleanup enrichment (absent when cleanup hasn't run):
+  cleanedLabel?: string; // human label to show instead of `label`
+  suggestedClientName?: string; // an existing client this likely belongs to
+  confidence?: number; // 0..1 confidence in the client attribution
+}
+
+/** A distinct unassigned host/title/app and the time it represents. */
+export interface UnassignedBucket {
+  kind: "site" | "title" | "app";
+  key: string; // host (site), cleaned title (title), or app name (app)
+  seconds: number;
+  sampleHost: string;
+  sampleTitle: string;
+  sampleApp: string;
+}
+
+/** What the LLM cleanup contributes for one host/title, looked up by raw key. */
+export interface EnrichmentHit {
+  cleanedLabel: string;
+  isPerClientSubdomain: boolean;
+  suggestedUrlDomain: string | null;
+  suggestedClientName: string | null;
+  confidence: number;
+}
+
+export interface EnrichmentLookup {
+  get(raw: string): EnrichmentHit | undefined;
+}
+
+/**
+ * Bucket unassigned usage into distinct sites (by host), titles (browser tabs
+ * without a URL) and apps, summing time and keeping a representative sample for
+ * context. Shared by `suggestRules` and the LLM cleanup so both see the same set
+ * of distinct strings. Buckets below `minSeconds` are dropped. Order is sites,
+ * then titles, then apps (each in first-seen order).
+ */
+export function bucketUnassigned(
+  categorized: Categorized[],
+  minSeconds = 60,
+): UnassignedBucket[] {
+  const sites = new Map<string, UnassignedBucket>();
+  const titles = new Map<string, UnassignedBucket>();
+  const apps = new Map<string, UnassignedBucket>();
+
+  const bump = (
+    map: Map<string, UnassignedBucket>,
+    kind: UnassignedBucket["kind"],
+    key: string,
+    seconds: number,
+    sample: { host: string; title: string; app: string },
+  ) => {
+    const existing = map.get(key);
+    if (existing) {
+      existing.seconds += seconds;
+    } else {
+      map.set(key, {
+        kind,
+        key,
+        seconds,
+        sampleHost: sample.host,
+        sampleTitle: sample.title,
+        sampleApp: sample.app,
+      });
+    }
+  };
+
+  for (const c of categorized) {
+    if (c.matchedRuleId !== null) continue; // only unassigned time
+    const sec = c.event.duration;
+    const host = hostOf(c.event.url);
+    const sample = { host, title: c.event.title, app: c.event.app };
+    if (host) {
+      bump(sites, "site", host, sec, sample);
+    } else if (isBrowserApp(c.event.app)) {
+      const title = cleanTitle(c.event.title);
+      if (title) bump(titles, "title", title, sec, sample);
+      else bump(apps, "app", c.event.app, sec, sample);
+    } else {
+      bump(apps, "app", c.event.app, sec, sample);
+    }
+  }
+
+  return [...sites.values(), ...titles.values(), ...apps.values()].filter(
+    (b) => b.seconds >= minSeconds,
+  );
 }
 
 /**
@@ -207,57 +292,60 @@ export interface RuleSuggestion {
 export function suggestRules(
   categorized: Categorized[],
   minSeconds = 60,
+  enrich?: EnrichmentLookup,
 ): RuleSuggestion[] {
-  const sites = new Map<string, number>();
-  const titles = new Map<string, number>();
-  const apps = new Map<string, number>();
+  const buckets = bucketUnassigned(categorized, minSeconds);
 
-  for (const c of categorized) {
-    if (c.matchedRuleId !== null) continue; // only unassigned time
-    const sec = c.event.duration;
-    const host = hostOf(c.event.url);
-    if (host) {
-      // A real URL (browser with the web extension) — map by domain.
-      sites.set(host, (sites.get(host) ?? 0) + sec);
-    } else if (isBrowserApp(c.event.app)) {
-      // A browser without a URL (e.g. Comet) — map by the tab/chat title, which
-      // is the only signal we have and the granularity the user wants.
-      const title = cleanTitle(c.event.title);
-      if (title) titles.set(title, (titles.get(title) ?? 0) + sec);
-      else apps.set(c.event.app, (apps.get(c.event.app) ?? 0) + sec);
-    } else {
-      // A native app — map by app name.
-      apps.set(c.event.app, (apps.get(c.event.app) ?? 0) + sec);
+  const suggestions: RuleSuggestion[] = buckets.map((b) => {
+    if (b.kind === "site") {
+      const e = enrich?.get(b.key);
+      // A per-client subdomain (e.g. maasgroup.looplogics.com) keeps its FULL
+      // host so each client gets its own rule; everything else collapses to the
+      // registrable domain as before.
+      const urlDomain =
+        e && e.isPerClientSubdomain && e.suggestedUrlDomain
+          ? e.suggestedUrlDomain
+          : (e?.suggestedUrlDomain ?? registrableDomain(b.key));
+      return withEnrichment(
+        { match: { urlDomain }, label: b.key, seconds: b.seconds, kind: "site" },
+        e,
+      );
     }
-  }
+    if (b.kind === "title") {
+      const e = enrich?.get(b.key);
+      return withEnrichment(
+        {
+          match: { titleRegex: escapeRegExp(b.key) },
+          label: b.key,
+          seconds: b.seconds,
+          kind: "title",
+        },
+        e,
+      );
+    }
+    return {
+      match: { app: b.key },
+      label: b.key,
+      seconds: b.seconds,
+      kind: "app",
+    };
+  });
 
-  const suggestions: RuleSuggestion[] = [];
-  for (const [host, seconds] of sites) {
-    if (seconds >= minSeconds) {
-      suggestions.push({
-        match: { urlDomain: registrableDomain(host) },
-        label: host,
-        seconds,
-        kind: "site",
-      });
-    }
-  }
-  for (const [title, seconds] of titles) {
-    if (seconds >= minSeconds) {
-      suggestions.push({
-        match: { titleRegex: escapeRegExp(title) },
-        label: title,
-        seconds,
-        kind: "title",
-      });
-    }
-  }
-  for (const [app, seconds] of apps) {
-    if (seconds >= minSeconds) {
-      suggestions.push({ match: { app }, label: app, seconds, kind: "app" });
-    }
-  }
   return suggestions.sort((a, b) => b.seconds - a.seconds);
+}
+
+/** Attach optional LLM display/attribution fields to a suggestion. */
+function withEnrichment(
+  s: RuleSuggestion,
+  e: EnrichmentHit | undefined,
+): RuleSuggestion {
+  if (!e) return s;
+  return {
+    ...s,
+    cleanedLabel: e.cleanedLabel,
+    suggestedClientName: e.suggestedClientName ?? undefined,
+    confidence: e.confidence,
+  };
 }
 
 /**

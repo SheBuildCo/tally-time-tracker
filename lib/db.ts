@@ -67,6 +67,25 @@ function migrate(db: Database.Database): void {
       day          TEXT PRIMARY KEY,
       finalized_at TEXT NOT NULL
     );
+    -- LLM cleanup cache: each distinct raw host/title is enriched at most once
+    -- (per model), so views stay fast + deterministic and cost is bounded.
+    CREATE TABLE IF NOT EXISTS cleanup_cache (
+      raw                   TEXT PRIMARY KEY,  -- the raw host (sites) or cleaned title
+      kind                  TEXT NOT NULL,     -- 'site' | 'title'
+      cleaned_label         TEXT NOT NULL,
+      is_per_client         INTEGER NOT NULL DEFAULT 0,
+      suggested_domain      TEXT,
+      suggested_client_name TEXT,              -- resolved to an id at read time
+      confidence            REAL NOT NULL DEFAULT 0,
+      model                 TEXT NOT NULL,     -- ENRICH_MODEL used (invalidates on model change)
+      updated_at            TEXT NOT NULL
+    );
+    -- Simple key/value app settings (e.g. the shared Anthropic API key). Lives
+    -- in the per-user data dir; the key is write-only from the renderer's view.
+    CREATE TABLE IF NOT EXISTS app_settings (
+      key   TEXT PRIMARY KEY,
+      value TEXT
+    );
   `);
   migrateDailyActivityPk(db);
 }
@@ -206,6 +225,129 @@ export function isFinalized(day: string): boolean {
 
 export function clearDayFinalized(day: string): void {
   connect().prepare("DELETE FROM day_finalized WHERE day = ?").run(day);
+}
+
+// ---- cleanup cache (LLM enrichment) --------------------------------------
+
+export interface CleanupRow {
+  raw: string;
+  kind: "site" | "title";
+  cleanedLabel: string;
+  isPerClient: boolean;
+  suggestedDomain: string | null;
+  suggestedClientName: string | null;
+  confidence: number;
+  model: string;
+}
+
+interface CleanupDbRow {
+  raw: string;
+  kind: string;
+  cleaned_label: string;
+  is_per_client: number;
+  suggested_domain: string | null;
+  suggested_client_name: string | null;
+  confidence: number;
+  model: string;
+}
+
+function toCleanupRow(r: CleanupDbRow): CleanupRow {
+  return {
+    raw: r.raw,
+    kind: r.kind === "title" ? "title" : "site",
+    cleanedLabel: r.cleaned_label,
+    isPerClient: !!r.is_per_client,
+    suggestedDomain: r.suggested_domain,
+    suggestedClientName: r.suggested_client_name,
+    confidence: r.confidence,
+    model: r.model,
+  };
+}
+
+/** All cached cleanups for the given model, keyed by raw host/title. */
+export function getCleanupCache(model: string): Map<string, CleanupRow> {
+  const rows = connect()
+    .prepare("SELECT * FROM cleanup_cache WHERE model = ?")
+    .all(model)
+    .map((r) => toCleanupRow(r as CleanupDbRow));
+  return new Map(rows.map((r) => [r.raw, r]));
+}
+
+/** Cached cleanups for a specific set of raw keys (for diffing before a run). */
+export function getCleanupFor(
+  raws: string[],
+  model: string,
+): Map<string, CleanupRow> {
+  if (raws.length === 0) return new Map();
+  const db = connect();
+  const stmt = db.prepare(
+    "SELECT * FROM cleanup_cache WHERE model = ? AND raw = ?",
+  );
+  const out = new Map<string, CleanupRow>();
+  for (const raw of raws) {
+    const row = stmt.get(model, raw) as CleanupDbRow | undefined;
+    if (row) out.set(raw, toCleanupRow(row));
+  }
+  return out;
+}
+
+/** Insert or overwrite cleanup rows (re-cleaning replaces prior values). */
+export function upsertCleanup(rows: CleanupRow[], updatedAt: string): void {
+  const db = connect();
+  const stmt = db.prepare(
+    `INSERT INTO cleanup_cache
+       (raw, kind, cleaned_label, is_per_client, suggested_domain,
+        suggested_client_name, confidence, model, updated_at)
+     VALUES (@raw, @kind, @cleaned_label, @is_per_client, @suggested_domain,
+        @suggested_client_name, @confidence, @model, @updated_at)
+     ON CONFLICT(raw) DO UPDATE SET
+       kind = excluded.kind,
+       cleaned_label = excluded.cleaned_label,
+       is_per_client = excluded.is_per_client,
+       suggested_domain = excluded.suggested_domain,
+       suggested_client_name = excluded.suggested_client_name,
+       confidence = excluded.confidence,
+       model = excluded.model,
+       updated_at = excluded.updated_at`,
+  );
+  const tx = db.transaction((rs: CleanupRow[]) => {
+    for (const r of rs) {
+      stmt.run({
+        raw: r.raw,
+        kind: r.kind,
+        cleaned_label: r.cleanedLabel,
+        is_per_client: r.isPerClient ? 1 : 0,
+        suggested_domain: r.suggestedDomain,
+        suggested_client_name: r.suggestedClientName,
+        confidence: r.confidence,
+        model: r.model,
+        updated_at: updatedAt,
+      });
+    }
+  });
+  tx(rows);
+}
+
+export function clearCleanupCache(): void {
+  connect().prepare("DELETE FROM cleanup_cache").run();
+}
+
+// ---- app settings (key/value) --------------------------------------------
+
+export function getSetting(key: string): string | null {
+  const row = connect()
+    .prepare("SELECT value FROM app_settings WHERE key = ?")
+    .get(key) as { value: string | null } | undefined;
+  return row ? row.value : null;
+}
+
+export function setSetting(key: string, value: string | null): void {
+  connect()
+    .prepare(
+      `INSERT INTO app_settings (key, value) VALUES (?, ?)
+       ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
+    )
+    .run(key, value);
 }
 
 // ---- row mapping ---------------------------------------------------------

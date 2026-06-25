@@ -98,6 +98,22 @@ Go to **Settings**:
 That's the only setup. From then on tracking is automatic and time flows into the
 right client's billables.
 
+## 6. (Optional) AI cleanup of tab titles & per-client sites
+
+Some platforms give each client their own subdomain (e.g.
+`maasgroup.looplogics.com`, `acme.looplogics.com`). Tally can use Claude to clean
+up messy tab titles and split those per-client sites so each is billed to the
+right client instead of being lumped under one `looplogics.com` rule.
+
+- In **Settings → AI cleanup**, paste a shared Anthropic API key. It's stored
+  locally on that machine and never shown again.
+- Click **Clean up titles & sites** (also runs automatically after a re-sync).
+  Confident client matches are applied for you; anything uncertain is left in the
+  **Unassigned usage** list with the suggested client pre-filled for a one-click
+  confirm.
+
+Without a key, Tally still works exactly as before — this feature is additive.
+
 ## Troubleshooting
 
 | Symptom                              | Fix                                                                 |

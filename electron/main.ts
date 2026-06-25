@@ -107,6 +107,8 @@ function registerIpc(h: Handlers): void {
     getDaily: (days: number) => h.getDaily(days),
     health: () => h.health(),
     resync: (days: number) => h.resync(days),
+    cleanup: (days: number, opts: any) => h.cleanup(days, opts),
+    setApiKey: (value: string) => h.setApiKey(value),
     listClients: () => h.getClients(),
     createClient: (input: any) => h.addClient(input),
     updateClient: (id: number, fields: any) => h.patchClient(id, fields),

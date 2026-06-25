@@ -10,6 +10,7 @@ import {
   buildReport,
 } from "./report";
 import { resyncRange } from "./ingest";
+import { runCleanup } from "./cleanup";
 import {
   createClient,
   createRule,
@@ -18,6 +19,7 @@ import {
   getClient,
   listClients,
   listRules,
+  setSetting,
   updateClient,
   type RuleInput,
 } from "./db";
@@ -40,10 +42,34 @@ export const getDaily = (days: number) => buildDailyReport(clampDays(days));
 export const getClientDay = (clientId: number, day: string) =>
   buildClientDay(clientId, day);
 
-export const resync = (days: number) => resyncRange(clampDays(days));
+export const resync = async (days: number) => {
+  const d = clampDays(days);
+  const result = await resyncRange(d);
+  // Hands-off cleanup: enrich any new unassigned hosts/titles and auto-apply
+  // confident attributions. Never let it fail the resync.
+  try {
+    await runCleanup(d);
+  } catch (err) {
+    console.warn("[cleanup] post-resync cleanup failed:", err);
+  }
+  return result;
+};
+
+/** Explicit "Clean up titles & sites" action (and force re-clean). */
+export const cleanup = (days: number, opts?: { force?: boolean }) =>
+  runCleanup(clampDays(days), { force: opts?.force ?? false });
 
 export async function health() {
   return { available: await isAvailable(), awBaseUrl: AW_BASE_URL };
+}
+
+// ---- settings ------------------------------------------------------------
+
+/** Store the shared Anthropic API key (write-only — never read back to the UI). */
+export function setApiKey(value: unknown): { ok: true } {
+  if (typeof value !== "string") throw new ValidationError("invalid key");
+  setSetting("anthropic_api_key", value.trim() || null);
+  return { ok: true };
 }
 
 // ---- clients -------------------------------------------------------------

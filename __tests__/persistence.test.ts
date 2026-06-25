@@ -12,11 +12,18 @@ import { categorizeAll } from "@/lib/categorize";
 import { buildSummary } from "@/lib/analytics";
 import { rollup, rowsToCategorized } from "@/lib/ingest";
 import {
+  clearCleanupCache,
   clearDayFinalized,
   getActivityRows,
+  getCleanupCache,
+  getCleanupFor,
+  getSetting,
   replaceDayActivity,
   isFinalized,
   markFinalized,
+  setSetting,
+  upsertCleanup,
+  type CleanupRow,
 } from "@/lib/db";
 import { clients, rules, usage } from "./fixtures";
 
@@ -124,5 +131,68 @@ describe("daily_activity persistence round-trip", () => {
     expect(back.length).toBe(2);
     expect(new Set(back.map((r) => r.host)).size).toBe(2);
     expect(back.reduce((s, r) => s + r.seconds, 0)).toBe(1800);
+  });
+});
+
+describe("cleanup_cache persistence", () => {
+  const MODEL = "claude-sonnet-4-6";
+  const row = (over: Partial<CleanupRow> = {}): CleanupRow => ({
+    raw: "maasgroup.looplogics.com",
+    kind: "site",
+    cleanedLabel: "MaasGroup — LoopLogics",
+    isPerClient: true,
+    suggestedDomain: "maasgroup.looplogics.com",
+    suggestedClientName: "MaasGroup",
+    confidence: 0.95,
+    model: MODEL,
+    ...over,
+  });
+
+  it("round-trips and overwrites on conflict", () => {
+    clearCleanupCache();
+    upsertCleanup([row()], "2026-06-25T00:00:00.000Z");
+    let cache = getCleanupCache(MODEL);
+    expect(cache.get("maasgroup.looplogics.com")?.confidence).toBe(0.95);
+
+    // ON CONFLICT overwrite
+    upsertCleanup(
+      [row({ confidence: 0.4, cleanedLabel: "changed" })],
+      "2026-06-25T01:00:00.000Z",
+    );
+    cache = getCleanupCache(MODEL);
+    expect(cache.size).toBe(1);
+    expect(cache.get("maasgroup.looplogics.com")?.confidence).toBe(0.4);
+    expect(cache.get("maasgroup.looplogics.com")?.cleanedLabel).toBe("changed");
+  });
+
+  it("filters by model and supports getCleanupFor + clear", () => {
+    clearCleanupCache();
+    upsertCleanup(
+      [row(), row({ raw: "old.host", model: "claude-haiku-4-5" })],
+      "2026-06-25T00:00:00.000Z",
+    );
+    expect(getCleanupCache(MODEL).size).toBe(1); // other-model row excluded
+
+    const subset = getCleanupFor(
+      ["maasgroup.looplogics.com", "missing"],
+      MODEL,
+    );
+    expect(subset.has("maasgroup.looplogics.com")).toBe(true);
+    expect(subset.has("missing")).toBe(false);
+
+    clearCleanupCache();
+    expect(getCleanupCache(MODEL).size).toBe(0);
+  });
+});
+
+describe("app_settings key/value", () => {
+  it("stores, overwrites and clears a setting", () => {
+    expect(getSetting("anthropic_api_key")).toBeNull();
+    setSetting("anthropic_api_key", "sk-ant-1");
+    expect(getSetting("anthropic_api_key")).toBe("sk-ant-1");
+    setSetting("anthropic_api_key", "sk-ant-2");
+    expect(getSetting("anthropic_api_key")).toBe("sk-ant-2");
+    setSetting("anthropic_api_key", null);
+    expect(getSetting("anthropic_api_key")).toBeNull();
   });
 });

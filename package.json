@@ -21,6 +21,7 @@
     "dist": "npm run export:next && npm run build:main && electron-builder"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.106.0",
     "@tremor/react": "^3.18.7",
     "better-sqlite3": "^11.9.1",
     "next": "^14.2.35",

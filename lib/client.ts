@@ -4,6 +4,7 @@
 // This is the ONLY transport seam, so pages never branch on environment.
 
 import type { Report, ClientReport, DailyReport } from "./report";
+import type { CleanupResult } from "./cleanup";
 import type { Client, MappingRule } from "./types";
 
 export interface HealthResult {
@@ -19,6 +20,8 @@ export interface TallyApi {
   getDaily(days: number): Promise<DailyReport>;
   health(): Promise<HealthResult>;
   resync(days: number): Promise<{ ok: boolean; trackerAvailable: boolean }>;
+  cleanup(days: number, opts?: { force?: boolean }): Promise<CleanupResult>;
+  setApiKey(value: string): Promise<{ ok: boolean }>;
   listClients(): Promise<{ clients: Client[] }>;
   createClient(input: {
     name: string;
@@ -61,6 +64,15 @@ const restApi: TallyApi = {
   getDaily: (days) => http(`/api/daily?days=${days}`),
   health: () => http(`/api/health`),
   resync: (days) => http(`/api/resync?days=${days}`, { method: "POST" }),
+  cleanup: (days, opts) =>
+    http(`/api/cleanup?days=${days}&force=${opts?.force ? 1 : 0}`, {
+      method: "POST",
+    }),
+  setApiKey: (value) =>
+    http(`/api/settings/api-key`, {
+      method: "POST",
+      body: JSON.stringify({ value }),
+    }),
   listClients: () => http(`/api/clients`),
   createClient: (input) =>
     http(`/api/clients`, { method: "POST", body: JSON.stringify(input) }),

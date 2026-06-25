@@ -16,6 +16,9 @@ const tally = {
   getDaily: (days: number) => invoke("getDaily", days),
   health: () => invoke("health"),
   resync: (days: number) => invoke("resync", days),
+  cleanup: (days: number, opts?: { force?: boolean }) =>
+    invoke("cleanup", days, opts),
+  setApiKey: (value: string) => invoke("setApiKey", value),
   listClients: () => invoke("listClients"),
   createClient: (input: unknown) => invoke("createClient", input),
   updateClient: (id: number, fields: unknown) =>

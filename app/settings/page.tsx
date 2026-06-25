@@ -33,7 +33,12 @@ export default function SettingsPage() {
       <PageHeading
         title="Settings"
         subtitle="Tracking is automatic — this is the only setup. Map usage to clients here."
-        actions={<ResyncButton days={days} onDone={refresh} />}
+        actions={
+          <div className="flex flex-wrap gap-2">
+            <CleanupButton days={days} onDone={refresh} />
+            <ResyncButton days={days} onDone={refresh} />
+          </div>
+        }
       />
 
       <div className="space-y-4">
@@ -45,6 +50,7 @@ export default function SettingsPage() {
             refresh();
           }}
         />
+        <ApiKeyCard />
         <ClientsCard clients={clients} onChange={reload} />
         <RulesCard
           rules={rules}
@@ -80,6 +86,28 @@ function ResyncButton({ days, onDone }: { days: number; onDone: () => void }) {
   );
 }
 
+function CleanupButton({ days, onDone }: { days: number; onDone: () => void }) {
+  const [busy, setBusy] = useState(false);
+  return (
+    <button
+      disabled={busy}
+      title="Use AI to clean up tab/site labels and split per-client sites (e.g. maasgroup.looplogics)"
+      onClick={async () => {
+        setBusy(true);
+        try {
+          await api().cleanup(days);
+          onDone();
+        } finally {
+          setBusy(false);
+        }
+      }}
+      className="rounded-xl bg-violet-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-violet-700 disabled:opacity-60"
+    >
+      {busy ? "Cleaning…" : "Clean up titles & sites"}
+    </button>
+  );
+}
+
 /* ---------------- Unassigned suggestions ---------------- */
 
 function UnassignedSuggestions({
@@ -93,6 +121,19 @@ function UnassignedSuggestions({
 }) {
   const [assign, setAssign] = useState<Record<string, string>>({});
 
+  // Pre-fill the dropdown to the client Claude suggested (when it matches one we
+  // know), so a cleaned suggestion is one click to confirm.
+  const prefill = (s: RuleSuggestion): string => {
+    if (s.suggestedClientName) {
+      const c = clients.find(
+        (x) => x.name.toLowerCase() === s.suggestedClientName!.toLowerCase(),
+      );
+      if (c) return String(c.id);
+    }
+    return "";
+  };
+  const choiceFor = (s: RuleSuggestion) => assign[s.label] ?? prefill(s);
+
   if (suggestions.length === 0) {
     return (
       <Panel>
@@ -105,7 +146,7 @@ function UnassignedSuggestions({
   }
 
   async function createRule(s: RuleSuggestion) {
-    const choice = assign[s.label] ?? "";
+    const choice = choiceFor(s);
     const billable = choice !== "" && choice !== "internal";
     const clientId = billable ? Number(choice) : null;
     await api().createRule({
@@ -127,16 +168,24 @@ function UnassignedSuggestions({
         {suggestions.slice(0, 12).map((s) => (
           <div key={s.label} className="flex flex-wrap items-center gap-3 py-2.5">
             <div className="min-w-0 flex-1">
-              <div className="truncate font-medium text-slate-700">
-                {s.label}
+              <div className="flex items-center gap-2">
+                <span className="truncate font-medium text-slate-700">
+                  {s.cleanedLabel ?? s.label}
+                </span>
+                {typeof s.confidence === "number" && (
+                  <Pill tone={s.confidence >= 0.85 ? "good" : "muted"}>
+                    {Math.round(s.confidence * 100)}% sure
+                  </Pill>
+                )}
               </div>
-              <div className="text-xs text-slate-400">
+              <div className="truncate text-xs text-slate-400">
+                {s.cleanedLabel ? `${s.label} · ` : ""}
                 {describeMatch(s)} · {formatHours(secondsToHours(s.seconds))}
               </div>
             </div>
             <select
               className="rounded-lg border border-slate-200 px-2 py-1.5 text-sm text-slate-700"
-              value={assign[s.label] ?? ""}
+              value={choiceFor(s)}
               onChange={(e) =>
                 setAssign((a) => ({ ...a, [s.label]: e.target.value }))
               }
@@ -150,7 +199,7 @@ function UnassignedSuggestions({
               ))}
             </select>
             <button
-              disabled={(assign[s.label] ?? "") === ""}
+              disabled={choiceFor(s) === ""}
               onClick={() => createRule(s)}
               className="rounded-lg bg-violet-600 px-3 py-1.5 text-sm font-medium text-white disabled:cursor-not-allowed disabled:bg-slate-300"
             >
@@ -167,6 +216,63 @@ function describeMatch(s: RuleSuggestion): string {
   if (s.kind === "site") return `site ${s.match.urlDomain}`;
   if (s.kind === "title") return "tab / chat title";
   return "app";
+}
+
+/* ---------------- AI cleanup key ---------------- */
+
+function ApiKeyCard() {
+  const [value, setValue] = useState("");
+  const [state, setState] = useState<"idle" | "saving" | "saved">("idle");
+
+  async function save(e: React.FormEvent) {
+    e.preventDefault();
+    if (!value.trim()) return;
+    setState("saving");
+    try {
+      await api().setApiKey(value.trim());
+      setValue("");
+      setState("saved");
+    } catch {
+      setState("idle");
+    }
+  }
+
+  return (
+    <Panel>
+      <PanelTitle
+        title="AI cleanup"
+        subtitle="Paste a shared Anthropic API key to enable “Clean up titles & sites”. Stored locally on this machine; never shown again."
+      />
+      <form onSubmit={save} className="flex flex-wrap items-end gap-2">
+        <div className="flex-1">
+          <label className="block text-xs text-slate-400">
+            Anthropic API key
+          </label>
+          <input
+            type="password"
+            autoComplete="off"
+            value={value}
+            onChange={(e) => {
+              setValue(e.target.value);
+              setState("idle");
+            }}
+            placeholder="sk-ant-…"
+            className="w-full rounded-lg border border-slate-200 px-2 py-1.5 text-sm"
+          />
+        </div>
+        <button
+          type="submit"
+          disabled={state === "saving" || !value.trim()}
+          className="rounded-lg bg-slate-800 px-3 py-1.5 text-sm font-medium text-white disabled:opacity-60"
+        >
+          {state === "saving" ? "Saving…" : "Save key"}
+        </button>
+        {state === "saved" && (
+          <span className="text-sm text-emerald-600">Saved ✓</span>
+        )}
+      </form>
+    </Panel>
+  );
 }
 
 /* ---------------- Clients ---------------- */
