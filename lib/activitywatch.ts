@@ -195,9 +195,18 @@ function knownBrowserApps(buckets: Record<string, AWBucket>): Set<string> {
 }
 
 /**
- * Convert AW events into UsageEvent[], attaching the most likely browser URL to
- * each browser window slice. Browser slices are matched to web events by time
- * overlap; non-browser slices pass through unchanged.
+ * Convert AW events into UsageEvent[].
+ *
+ * For a browser window slice we drive the activity from the web-watcher (browser
+ * extension) events that overlap it: each overlapping tab becomes its own
+ * UsageEvent carrying the extension's accurate per-tab title + URL and the
+ * overlap duration. This splits a coarse window slice (which the window query
+ * merges by app+title, so several tabs can collapse into one) back into the
+ * individual tabs the user was actually on, and uses the extension's title
+ * rather than the often stale/generic OS window title.
+ *
+ * Browser slices with no overlapping web event (no extension, or a gap) and all
+ * non-browser slices pass through unchanged — the window title becomes the label.
  */
 export function stitchUsage(
   windowEvents: AWEvent[],
@@ -213,43 +222,52 @@ export function stitchUsage(
     }))
     .sort((a, b) => a.start - b.start);
 
-  return windowEvents.map((e) => {
+  return windowEvents.flatMap((e) => {
     const app = String(e.data.app ?? "unknown");
     const title = String(e.data.title ?? "");
-    const out: UsageEvent = {
-      app,
-      title,
-      duration: e.duration,
-      timestamp: e.timestamp,
-    };
+    const start = Date.parse(e.timestamp);
+    const end = start + e.duration * 1000;
+
     if (browserApps.has(app.toLowerCase())) {
-      const start = Date.parse(e.timestamp);
-      const end = start + e.duration * 1000;
-      const match = bestOverlap(webByStart, start, end);
-      if (match) out.url = match.url;
+      const overlaps = overlappingWeb(webByStart, start, end);
+      if (overlaps.length > 0) {
+        return overlaps.map((w) => {
+          const out: UsageEvent = {
+            app,
+            title: w.title || title, // prefer the extension's per-tab title
+            duration: w.overlapMs / 1000,
+            timestamp: new Date(Math.max(start, w.start)).toISOString(),
+          };
+          if (w.url) out.url = w.url;
+          return out;
+        });
+      }
     }
-    return out;
+    // Non-browser slice, or browser slice with no extension data: keep as-is.
+    return [{ app, title, duration: e.duration, timestamp: e.timestamp }];
   });
 }
 
-/** Pick the web event with the greatest temporal overlap with [start,end). */
-function bestOverlap(
+/**
+ * All web events overlapping [start,end), each with its overlap duration in ms.
+ * Input is sorted by start, so we can stop once an event begins at/after `end`.
+ */
+function overlappingWeb(
   web: { start: number; end: number; url: string; title: string }[],
   start: number,
   end: number,
-): { url: string; title: string } | undefined {
-  let best: { url: string; title: string } | undefined;
-  let bestOverlapMs = 0;
+): { start: number; url: string; title: string; overlapMs: number }[] {
+  const hits: { start: number; url: string; title: string; overlapMs: number }[] =
+    [];
   for (const w of web) {
     if (w.end <= start) continue;
-    if (w.start >= end) break; // sorted by start; nothing later can overlap less
-    const overlap = Math.min(end, w.end) - Math.max(start, w.start);
-    if (overlap > bestOverlapMs) {
-      bestOverlapMs = overlap;
-      best = { url: w.url, title: w.title };
+    if (w.start >= end) break; // sorted by start; nothing later can overlap
+    const overlapMs = Math.min(end, w.end) - Math.max(start, w.start);
+    if (overlapMs > 0) {
+      hits.push({ start: w.start, url: w.url, title: w.title, overlapMs });
     }
   }
-  return best;
+  return hits;
 }
 
 /** Convenience: a range covering the last `days` days up to now. */

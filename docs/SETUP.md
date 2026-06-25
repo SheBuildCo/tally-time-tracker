@@ -28,7 +28,7 @@ which reports the active tab's **URL** and title.
 
 Install the **ActivityWatch Web Watcher** for each browser the team uses:
 
-- **Chrome / Microsoft Edge** (Edge is Chromium, the Chrome extension works):
+- **Chrome / Microsoft Edge / Comet** (all Chromium, the Chrome extension works):
   search "ActivityWatch Web Watcher" in the Chrome Web Store and add it.
 - **Firefox**: install from
   <https://addons.mozilla.org/firefox/addon/aw-watcher-web/>.
@@ -41,18 +41,23 @@ After installing, click the extension icon once — it should show "Connected" t
 > further intersects it with non-idle time, so a URL is only billed when you were
 > actually present in that tab.
 
-### Comet and browsers without an extension
+### Comet
 
-Tally also tracks at **window-title** granularity, so browsers that don't have an
-ActivityWatch extension — like **Comet** — are still captured in detail: the active
-tab's title (e.g. a specific client chat in Teams, or a document name) shows up as
-an "activity" even without a URL. For these browsers:
+**Comet is Chromium**, so install the same **ActivityWatch Web Watcher** extension
+in it (Chrome Web Store, as above). This is what makes per-tab tracking accurate:
+the extension reports each tab's real **URL and title**, and Tally attributes time
+**per tab** from that data. Without the extension, Comet falls back to the OS window
+title, which is often stale or generic ("New Tab") and can collapse several tabs into
+one entry — so confirm the extension shows **"Connected"** and that an
+`aw-watcher-web-*` bucket is filling at <http://localhost:5600>.
 
-- You don't need the web extension — the window watcher already reports tab titles.
-- Map them to clients with **title** rules: in **Settings → Unassigned usage**, a
-  browser tab with no URL is suggested as a *tab/chat title* rule you can assign to
-  a client. You can also map by a keyword that appears in the title (e.g. the
-  client's name).
+### Browsers without an extension
+
+If a browser has no ActivityWatch extension, Tally still captures it at
+**window-title** granularity: the active tab's title shows up as an "activity" even
+without a URL. Map these to clients with **title** rules in **Settings → Unassigned
+usage** — a tab with no URL is suggested as a *tab/chat title* rule, and you can also
+match a keyword in the title (e.g. the client's name).
 
 ## 3. Verify capture
 
@@ -99,6 +104,8 @@ right client's billables.
 | ------------------------------------ | ------------------------------------------------------------------- |
 | Tally banner: "ActivityWatch isn't reachable" | Start `aw-qt`; confirm <http://localhost:5600> loads.      |
 | Web time missing / no URLs           | Install the browser extension and click it to confirm "Connected".  |
+| Comet tabs inaccurate / tabs missing | Install the Web Watcher extension **in Comet** and confirm "Connected"; per-tab accuracy needs it. |
+| Browser shows "0s active"            | Expected when it was open but not the focused window — idle/background time is excluded. |
 | Edge not tracked                     | Install the Chrome Web Store extension in Edge (it's Chromium).      |
 | Wrong client on a site               | Edit/replace the mapping rule in **Settings → Mapping rules**.       |
 | Comet/other browser tab not mapped   | Map it by **title** in Settings → Unassigned usage (no URL needed).  |
