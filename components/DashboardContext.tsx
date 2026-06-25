@@ -6,6 +6,7 @@ import {
   useContext,
   useEffect,
   useMemo,
+  useRef,
   useState,
 } from "react";
 import { api } from "@/lib/client";
@@ -19,6 +20,8 @@ interface DashboardState {
   days: number;
   setDays: (d: number) => void;
   refresh: () => void;
+  /** Bumps on every refresh so per-page views can re-fetch in lockstep. */
+  refreshKey: number;
 }
 
 const DashboardCtx = createContext<DashboardState | null>(null);
@@ -38,6 +41,33 @@ export function DashboardProvider({ children }: { children: React.ReactNode }) {
   const [nonce, setNonce] = useState(0);
 
   const refresh = useCallback(() => setNonce((n) => n + 1), []);
+
+  // Auto-refresh whenever the user actually looks at the app (window focus /
+  // tab becomes visible) and on a light interval while it stays visible, so a
+  // long-lived window doesn't show frozen "today" numbers. Throttled so the
+  // focus + visibilitychange double-fire on alt-tab collapses to one fetch.
+  const lastAutoRefresh = useRef(0);
+  useEffect(() => {
+    const POLL_MS = 60_000;
+    const THROTTLE_MS = 2_000;
+    const refreshIfVisible = () => {
+      if (document.visibilityState !== "visible") return;
+      const now = Date.now();
+      if (now - lastAutoRefresh.current < THROTTLE_MS) return;
+      lastAutoRefresh.current = now;
+      refresh();
+    };
+    const onVisibility = () => refreshIfVisible();
+    const onFocus = () => refreshIfVisible();
+    document.addEventListener("visibilitychange", onVisibility);
+    window.addEventListener("focus", onFocus);
+    const interval = window.setInterval(refreshIfVisible, POLL_MS);
+    return () => {
+      document.removeEventListener("visibilitychange", onVisibility);
+      window.removeEventListener("focus", onFocus);
+      window.clearInterval(interval);
+    };
+  }, [refresh]);
 
   useEffect(() => {
     let cancelled = false;
@@ -73,8 +103,9 @@ export function DashboardProvider({ children }: { children: React.ReactNode }) {
       days,
       setDays,
       refresh,
+      refreshKey: nonce,
     }),
-    [report, loading, error, trackerAvailable, days, refresh],
+    [report, loading, error, trackerAvailable, days, refresh, nonce],
   );
 
   return <DashboardCtx.Provider value={value}>{children}</DashboardCtx.Provider>;

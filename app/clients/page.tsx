@@ -9,7 +9,7 @@ import type { Client } from "@/lib/types";
 import type { ClientReport } from "@/lib/report";
 
 export default function ClientsPage() {
-  const { days } = useDashboard();
+  const { days, refreshKey } = useDashboard();
   const [clients, setClients] = useState<Client[]>([]);
   const [selected, setSelected] = useState<number | null>(null);
   const [detail, setDetail] = useState<ClientReport | null>(null);
@@ -41,7 +41,7 @@ export default function ClientsPage() {
     return () => {
       cancelled = true;
     };
-  }, [selected, days]);
+  }, [selected, days, refreshKey]);
 
   return (
     <div>

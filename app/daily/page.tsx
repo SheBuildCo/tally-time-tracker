@@ -18,7 +18,7 @@ import type { DailyTotalRow } from "@/lib/analytics";
 import type { ClientReport } from "@/lib/report";
 
 export default function DailyPage() {
-  const { days } = useDashboard();
+  const { days, refreshKey } = useDashboard();
   const [rows, setRows] = useState<DailyTotalRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [open, setOpen] = useState<{ clientId: number; date: string } | null>(
@@ -42,7 +42,7 @@ export default function DailyPage() {
     return () => {
       cancelled = true;
     };
-  }, [days]);
+  }, [days, refreshKey]);
 
   useEffect(() => {
     if (!open) {
