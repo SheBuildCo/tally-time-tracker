@@ -1,136 +1,86 @@
 "use client";
 
-import { BarChart, BarList, LineChart } from "@tremor/react";
+import Link from "next/link";
 import LoadingGate from "@/components/LoadingGate";
-import {
-  CHART,
-  PageHeading,
-  Panel,
-  PanelTitle,
-  StatCard,
-} from "@/components/ui";
-import { formatCurrency, formatDayLabel, formatHours } from "@/lib/format";
+import { PageHeading, Panel, PanelTitle, StatCard } from "@/components/ui";
+import { ClientValueDonut, HoursBars } from "@/components/charts";
+import { formatCurrency, formatHours } from "@/lib/format";
+import { groupActivitiesBySite } from "@/lib/group";
 
 export default function OverviewPage() {
   return (
     <div>
       <PageHeading
         title="Overview"
-        subtitle="Your tracked activity, mapped to clients and billables."
+        subtitle="Where your billable time and value are going, by client."
       />
 
       <LoadingGate>
         {(report) => {
-          const daily = report.daily.map((d) => ({
-            date: formatDayLabel(d.date),
-            Billable: d.billableHours,
-            "Non-billable": d.nonBillableHours,
-            Total:
-              Math.round((d.billableHours + d.nonBillableHours) * 100) / 100,
-          }));
-
           const topClients = report.clients
             .filter((c) => c.hours > 0)
+            .sort((a, b) => b.hours - a.hours)
             .slice(0, 6)
-            .map((c) => ({ name: c.name, value: c.hours }));
+            .map((c) => ({
+              name: c.name,
+              value: c.hours,
+              unassigned: c.clientId === null,
+            }));
 
-          const topActivities = report.activities
-            .slice(0, 6)
-            .map((a) => ({ name: a.label, value: a.hours }));
-
-          const billablePct =
-            report.totalHours > 0
-              ? Math.round((report.billableHours / report.totalHours) * 100)
-              : 0;
+          const topSites = groupActivitiesBySite(report.activities)
+            .slice(0, 8)
+            .map((g) => ({
+              name: g.site,
+              value: g.hours,
+              unassigned: !g.topClient || g.topClient === "Unassigned",
+            }));
 
           return (
             <div className="space-y-5">
-              <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-                <StatCard
-                  label="Active time"
-                  value={formatHours(report.totalHours)}
-                  caption="excludes idle time"
-                />
-                <StatCard
-                  label="Billable time"
-                  value={formatHours(report.billableHours)}
-                  caption={`${billablePct}% of tracked`}
-                  tone="good"
-                />
+              {/* Single money hero — totals de-emphasised in favour of breakdowns. */}
+              <div className="grid gap-4 lg:grid-cols-3">
                 <StatCard
                   label="Billable value"
                   value={formatCurrency(report.billableAmount)}
-                  caption="across all clients"
+                  caption={`${formatHours(report.billableHours)} billable${
+                    report.unassignedHours > 0
+                      ? ` · ${formatHours(report.unassignedHours)} unassigned`
+                      : ""
+                  }`}
                   tone="good"
                 />
-                <StatCard
-                  label="Unassigned"
-                  value={formatHours(report.unassignedHours)}
-                  caption={
-                    report.unassignedHours > 0
-                      ? "review in Settings"
-                      : "all mapped"
-                  }
-                  tone={report.unassignedHours > 0 ? "warn" : "default"}
-                />
-              </div>
-
-              <div className="grid gap-4 lg:grid-cols-2">
-                <Panel>
+                <Panel className="lg:col-span-2 !p-5">
                   <PanelTitle
-                    title="Activity by day"
-                    subtitle="Billable vs non-billable hours"
+                    title="Where the value is"
+                    subtitle="Billable value by client"
                   />
-                  <BarChart
-                    className="h-72"
-                    data={daily}
-                    index="date"
-                    categories={["Billable", "Non-billable"]}
-                    colors={[CHART.billable, CHART.nonBillable]}
-                    valueFormatter={(v: number) => formatHours(v)}
-                    stack
-                    showLegend
-                  />
-                </Panel>
-                <Panel>
-                  <PanelTitle
-                    title="Total hours trend"
-                    subtitle="Active hours per day"
-                  />
-                  <LineChart
-                    className="h-72"
-                    data={daily}
-                    index="date"
-                    categories={["Total"]}
-                    colors={[CHART.accent]}
-                    valueFormatter={(v: number) => formatHours(v)}
-                    showLegend={false}
-                    curveType="monotone"
-                  />
+                  <ClientValueDonut clients={report.clients} />
                 </Panel>
               </div>
 
               <div className="grid gap-4 lg:grid-cols-2">
                 <Panel>
                   <PanelTitle title="Top clients" subtitle="Active hours" />
-                  <BarList
-                    data={topClients}
-                    valueFormatter={(v: number) => formatHours(v)}
-                    color={CHART.billable}
-                  />
+                  <HoursBars data={topClients} />
                 </Panel>
                 <Panel>
-                  <PanelTitle
-                    title="Top activities"
-                    subtitle="Specific tabs, chats & apps"
-                  />
-                  <BarList
-                    data={topActivities}
-                    valueFormatter={(v: number) => formatHours(v)}
-                    color={CHART.accent}
-                  />
+                  <PanelTitle title="Top sites" subtitle="Active hours by site" />
+                  <HoursBars data={topSites} />
                 </Panel>
               </div>
+
+              {report.unassignedHours > 0 ? (
+                <p className="text-center text-xs text-slate-400">
+                  {formatHours(report.unassignedHours)} of time isn&apos;t mapped
+                  to a client yet ·{" "}
+                  <Link
+                    href="/settings"
+                    className="text-slate-500 underline-offset-2 hover:underline"
+                  >
+                    review in Settings
+                  </Link>
+                </p>
+              ) : null}
             </div>
           );
         }}

@@ -13,7 +13,26 @@ const config: Config = {
     transparent: "transparent",
     current: "currentColor",
     extend: {
+      fontFamily: {
+        sans: [
+          "var(--font-dm-sans)",
+          "ui-sans-serif",
+          "system-ui",
+          "-apple-system",
+          "Segoe UI",
+          "Roboto",
+          "Helvetica",
+          "Arial",
+          "sans-serif",
+        ],
+      },
       colors: {
+        // refined brand accent (replaces hardcoded violet-600/100 across the UI)
+        brand: {
+          DEFAULT: "var(--brand)",
+          strong: "var(--brand-strong)",
+          soft: "var(--brand-soft)",
+        },
         // light mode
         tremor: {
           brand: {

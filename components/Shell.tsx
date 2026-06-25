@@ -14,7 +14,7 @@ function RangeSelect() {
       <select
         value={days}
         onChange={(e) => setDays(Number(e.target.value))}
-        className="rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-sm font-medium text-slate-700 shadow-sm focus:border-violet-300 focus:outline-none focus:ring-2 focus:ring-violet-100"
+        className="rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-sm font-medium text-slate-700 shadow-sm focus:border-brand focus:outline-none focus:ring-2 focus:ring-brand-soft"
       >
         {RANGE_OPTIONS.map((opt) => (
           <option key={opt.days} value={opt.days}>
@@ -54,7 +54,7 @@ export default function Shell({ children }: { children: React.ReactNode }) {
       <header className="sticky top-0 z-10 border-b border-slate-200/70 bg-[var(--canvas)]/80 backdrop-blur">
         <div className="mx-auto flex max-w-6xl flex-wrap items-center gap-4 px-6 py-3">
           <div className="flex items-center gap-2">
-            <div className="grid h-8 w-8 place-items-center rounded-xl bg-violet-600 text-sm font-bold text-white">
+            <div className="grid h-8 w-8 place-items-center rounded-xl bg-brand text-sm font-bold text-white">
               T
             </div>
             <div className="text-lg font-bold tracking-tight text-slate-800">

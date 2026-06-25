@@ -12,13 +12,20 @@ import fs from "node:fs";
 import path from "node:path";
 import type { Client, MappingRule, RuleMatch } from "./types";
 
-const DATA_DIR = process.env.TALLY_DATA_DIR || path.join(process.cwd(), "data");
-const DB_PATH = process.env.TALLY_DB_PATH || path.join(DATA_DIR, "tally.db");
+// Resolve the DB path lazily (at first connect, not module load) so that env
+// vars set by the Electron main process or by tests take effect regardless of
+// ES-module import hoisting.
+function dbPath(): string {
+  const dataDir =
+    process.env.TALLY_DATA_DIR || path.join(process.cwd(), "data");
+  return process.env.TALLY_DB_PATH || path.join(dataDir, "tally.db");
+}
 
 let _db: Database.Database | null = null;
 
 function connect(): Database.Database {
   if (_db) return _db;
+  const DB_PATH = dbPath();
   fs.mkdirSync(path.dirname(DB_PATH), { recursive: true });
   const db = new Database(DB_PATH);
   db.pragma("journal_mode = WAL");

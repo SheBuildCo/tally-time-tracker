@@ -1,16 +1,16 @@
 "use client";
 
+import { BarChart } from "@tremor/react";
 import {
-  BarChart,
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeaderCell,
-  TableRow,
-} from "@tremor/react";
-import { CHART, Panel, PanelTitle, Pill, StatCard } from "@/components/ui";
+  CHART,
+  EmptyState,
+  Panel,
+  PanelTitle,
+  SiteGroup,
+  StatCard,
+} from "@/components/ui";
 import { formatCurrency, formatDayLabel, formatHours } from "@/lib/format";
+import { groupActivitiesBySite } from "@/lib/group";
 import type { ClientDetail } from "@/lib/analytics";
 
 /**
@@ -40,6 +40,8 @@ export default function ClientDetailView({
     Billable: d.billableHours,
     "Non-billable": d.nonBillableHours,
   }));
+
+  const sites = groupActivitiesBySite(detail.activities);
 
   return (
     <div className="space-y-4">
@@ -76,40 +78,17 @@ export default function ClientDetailView({
       <Panel>
         <PanelTitle
           title="What was worked on"
-          subtitle="Specific tabs, chats & documents"
+          subtitle="Grouped by site — expand a site to see the specific tabs & chats"
         />
-        <Table>
-          <TableHead>
-            <TableRow>
-              <TableHeaderCell>Activity</TableHeaderCell>
-              <TableHeaderCell>Where</TableHeaderCell>
-              <TableHeaderCell className="text-right">Time</TableHeaderCell>
-              <TableHeaderCell className="text-right">Billable</TableHeaderCell>
-            </TableRow>
-          </TableHead>
-          <TableBody>
-            {detail.activities.slice(0, 25).map((a) => (
-              <TableRow key={a.label}>
-                <TableCell className="max-w-xs truncate font-medium text-slate-700">
-                  {a.label}
-                </TableCell>
-                <TableCell className="text-slate-400">
-                  {a.host || a.app}
-                </TableCell>
-                <TableCell className="text-right text-slate-600">
-                  {formatHours(a.hours)}
-                </TableCell>
-                <TableCell className="text-right">
-                  {a.billableHours > 0 ? (
-                    <Pill tone="good">{formatHours(a.billableHours)}</Pill>
-                  ) : (
-                    <Pill tone="muted">—</Pill>
-                  )}
-                </TableCell>
-              </TableRow>
+        {sites.length === 0 ? (
+          <EmptyState>Nothing recorded for this period.</EmptyState>
+        ) : (
+          <div className="space-y-2">
+            {sites.map((g) => (
+              <SiteGroup key={g.site} group={g} />
             ))}
-          </TableBody>
-        </Table>
+          </div>
+        )}
       </Panel>
     </div>
   );

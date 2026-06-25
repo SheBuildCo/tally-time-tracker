@@ -2,9 +2,15 @@
 // matching the soft pastel reference design (white rounded cards, big slate
 // numbers, muted captions).
 
-import type { ReactNode } from "react";
+"use client";
 
-/** Pastel chart palette (Tremor colour names). */
+import { useState, type ReactNode } from "react";
+import { ChevronRight } from "lucide-react";
+import { cn } from "@/lib/utils";
+import { formatHours } from "@/lib/format";
+import type { SiteGroup as SiteGroupData } from "@/lib/group";
+
+/** Pastel chart palette (Tremor colour names — used by retained Tremor charts). */
 export const CHART = {
   billable: "violet",
   nonBillable: "sky",
@@ -116,7 +122,7 @@ export function Pill({
       ? "bg-emerald-50 text-emerald-600"
       : tone === "muted"
         ? "bg-slate-100 text-slate-400"
-        : "bg-violet-50 text-violet-600";
+        : "bg-brand-soft text-brand-strong";
   return (
     <span className={`rounded-full px-2 py-0.5 text-xs font-medium ${cls}`}>
       {children}
@@ -130,5 +136,109 @@ export function EmptyState({ children }: { children: ReactNode }) {
     <Panel>
       <div className="py-8 text-center text-sm text-slate-400">{children}</div>
     </Panel>
+  );
+}
+
+/**
+ * Lightweight expandable row (no Radix). A button header with a rotating chevron
+ * over a conditionally-rendered body. Grouping + expandable is the app's default
+ * for taming long lists ("when in doubt, group it").
+ */
+export function Collapsible({
+  title,
+  meta,
+  defaultOpen = false,
+  children,
+}: {
+  title: ReactNode;
+  meta?: ReactNode;
+  defaultOpen?: boolean;
+  children: ReactNode;
+}) {
+  const [open, setOpen] = useState(defaultOpen);
+  return (
+    <div className="overflow-hidden rounded-xl ring-1 ring-slate-100">
+      <button
+        type="button"
+        onClick={() => setOpen((o) => !o)}
+        aria-expanded={open}
+        className="flex w-full items-center gap-3 px-4 py-3 text-left transition-colors hover:bg-slate-50"
+      >
+        <ChevronRight
+          className={cn(
+            "h-4 w-4 shrink-0 text-slate-400 transition-transform",
+            open && "rotate-90",
+          )}
+        />
+        <div className="min-w-0 flex-1">{title}</div>
+        {meta ? <div className="flex items-center gap-2">{meta}</div> : null}
+      </button>
+      {open ? <div className="border-t border-slate-100">{children}</div> : null}
+    </div>
+  );
+}
+
+/**
+ * A site-first expandable group: the site/host leads, the specific tabs/chats
+ * are revealed on expand. Unassigned groups are rendered muted (never an amber
+ * alarm) — this is where the "de-emphasise unassigned" rule is centralised.
+ */
+export function SiteGroup({ group }: { group: SiteGroupData }) {
+  const unassigned = !group.topClient || group.topClient === "Unassigned";
+  return (
+    <Collapsible
+      title={
+        <div className="flex items-center gap-2">
+          <span
+            className={cn(
+              "truncate font-medium",
+              unassigned ? "text-slate-500" : "text-slate-700",
+            )}
+          >
+            {group.site}
+          </span>
+          {!unassigned ? (
+            <span className="shrink-0 text-xs text-slate-400">
+              {group.topClient}
+            </span>
+          ) : (
+            <Pill tone="muted">unassigned</Pill>
+          )}
+        </div>
+      }
+      meta={
+        <>
+          <span className="text-sm tabular-nums text-slate-500">
+            {formatHours(group.hours)}
+          </span>
+          {group.billableHours > 0 ? (
+            <Pill tone="good">{formatHours(group.billableHours)}</Pill>
+          ) : (
+            <Pill tone="muted">—</Pill>
+          )}
+        </>
+      }
+    >
+      <ul className="divide-y divide-slate-50">
+        {group.items.map((item, i) => (
+          <li
+            key={`${item.label}-${i}`}
+            className="flex items-center gap-3 px-4 py-2 pl-11"
+          >
+            <span className="min-w-0 flex-1 truncate text-sm text-slate-600">
+              {item.label}
+            </span>
+            <span className="shrink-0 text-sm tabular-nums text-slate-400">
+              {formatHours(item.hours)}
+            </span>
+            {item.billableHours > 0 ? (
+              <Pill tone="good">{formatHours(item.billableHours)}</Pill>
+            ) : (
+              <Pill tone="muted">—</Pill>
+            )}
+          </li>
+        ))}
+      </ul>
+    </Collapsible>
   );
 }

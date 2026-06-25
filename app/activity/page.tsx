@@ -10,87 +10,70 @@ import {
   TableRow,
 } from "@tremor/react";
 import LoadingGate from "@/components/LoadingGate";
-import { PageHeading, Panel, Pill } from "@/components/ui";
+import { EmptyState, PageHeading, Panel, Pill, SiteGroup } from "@/components/ui";
 import { formatHours } from "@/lib/format";
+import { groupActivitiesBySite } from "@/lib/group";
 
-type View = "activities" | "apps";
+type View = "sites" | "apps";
 
 export default function ActivityPage() {
-  const [view, setView] = useState<View>("activities");
+  const [view, setView] = useState<View>("sites");
 
   return (
     <div>
       <PageHeading
-        title="Activity"
-        subtitle="The specific tabs, chats and apps your time went to."
+        title="Sites & activity"
+        subtitle="Your time by site — expand a site to see the specific tabs and chats."
       />
 
       <LoadingGate>
-        {(report) => (
-          <Panel>
-            <div className="mb-4 inline-flex rounded-full bg-slate-100 p-1">
-              {(["activities", "apps"] as View[]).map((v) => (
-                <button
-                  key={v}
-                  onClick={() => setView(v)}
-                  className={[
-                    "rounded-full px-4 py-1.5 text-sm font-medium capitalize transition-colors",
-                    view === v
-                      ? "bg-white text-slate-800 shadow-sm"
-                      : "text-slate-500 hover:text-slate-700",
-                  ].join(" ")}
-                >
-                  {v === "apps" ? "Apps & sites" : "Activities"}
-                </button>
-              ))}
-            </div>
+        {(report) => {
+          const sites = groupActivitiesBySite(report.activities);
+          return (
+            <Panel>
+              <div className="mb-4 inline-flex rounded-full bg-slate-100 p-1">
+                {(["sites", "apps"] as View[]).map((v) => (
+                  <button
+                    key={v}
+                    onClick={() => setView(v)}
+                    className={[
+                      "rounded-full px-4 py-1.5 text-sm font-medium transition-colors",
+                      view === v
+                        ? "bg-white text-slate-800 shadow-sm"
+                        : "text-slate-500 hover:text-slate-700",
+                    ].join(" ")}
+                  >
+                    {v === "sites" ? "By site" : "Apps & sites"}
+                  </button>
+                ))}
+              </div>
 
-            <Table>
-              <TableHead>
-                <TableRow>
-                  <TableHeaderCell>
-                    {view === "apps" ? "App / Site" : "Activity"}
-                  </TableHeaderCell>
-                  <TableHeaderCell>
-                    {view === "apps" ? "Top client" : "Where"}
-                  </TableHeaderCell>
-                  {view === "activities" ? (
-                    <TableHeaderCell>Top client</TableHeaderCell>
-                  ) : null}
-                  <TableHeaderCell className="text-right">Active</TableHeaderCell>
-                  <TableHeaderCell className="text-right">
-                    Billable
-                  </TableHeaderCell>
-                </TableRow>
-              </TableHead>
-              <TableBody>
-                {view === "activities"
-                  ? report.activities.slice(0, 60).map((a) => (
-                      <TableRow key={a.label}>
-                        <TableCell className="max-w-sm truncate font-medium text-slate-700">
-                          {a.label}
-                        </TableCell>
-                        <TableCell className="text-slate-400">
-                          {a.host || a.app}
-                        </TableCell>
-                        <TableCell className="text-slate-500">
-                          {a.topClient}
-                        </TableCell>
-                        <TableCell className="text-right text-slate-600">
-                          {formatHours(a.hours)}
-                        </TableCell>
-                        <TableCell className="text-right">
-                          {a.billableHours > 0 ? (
-                            <Pill tone="good">
-                              {formatHours(a.billableHours)}
-                            </Pill>
-                          ) : (
-                            <Pill tone="muted">—</Pill>
-                          )}
-                        </TableCell>
-                      </TableRow>
-                    ))
-                  : report.apps.slice(0, 60).map((a) => (
+              {view === "sites" ? (
+                sites.length === 0 ? (
+                  <EmptyState>No tracked activity in this range yet.</EmptyState>
+                ) : (
+                  <div className="space-y-2">
+                    {sites.map((g) => (
+                      <SiteGroup key={g.site} group={g} />
+                    ))}
+                  </div>
+                )
+              ) : (
+                <Table>
+                  <TableHead>
+                    <TableRow>
+                      <TableHeaderCell>App / Site</TableHeaderCell>
+                      <TableHeaderCell>Top client</TableHeaderCell>
+                      <TableHeaderCell className="text-right">
+                        Active
+                      </TableHeaderCell>
+                      <TableHeaderCell className="text-right">
+                        Billable
+                      </TableHeaderCell>
+                    </TableRow>
+                  </TableHead>
+                  <TableBody>
+                    {report.apps.slice(0, 60).map((a) => (
                       <TableRow key={a.label}>
                         <TableCell className="font-medium text-slate-700">
                           {a.label}
@@ -117,10 +100,12 @@ export default function ActivityPage() {
                         </TableCell>
                       </TableRow>
                     ))}
-              </TableBody>
-            </Table>
-          </Panel>
-        )}
+                  </TableBody>
+                </Table>
+              )}
+            </Panel>
+          );
+        }}
       </LoadingGate>
     </div>
   );

@@ -65,7 +65,7 @@ export default function ClientsPage() {
                 className={[
                   "rounded-full px-4 py-1.5 text-sm font-medium transition-colors",
                   selected === c.id
-                    ? "bg-violet-600 text-white shadow-sm"
+                    ? "bg-brand text-white shadow-sm"
                     : "bg-white text-slate-600 ring-1 ring-slate-200 hover:bg-slate-50",
                 ].join(" ")}
               >
