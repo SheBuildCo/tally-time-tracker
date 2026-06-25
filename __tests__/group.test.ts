@@ -10,6 +10,7 @@ function act(over: Partial<ActivitySummary>): ActivitySummary {
     hours: 1,
     billableHours: 0,
     topClient: "",
+    topClientId: null,
     ...over,
   };
 }
@@ -17,21 +18,23 @@ function act(over: Partial<ActivitySummary>): ActivitySummary {
 describe("groupActivitiesBySite", () => {
   it("groups by host and sums hours, sorted by hours desc", () => {
     const groups = groupActivitiesBySite([
-      act({ label: "Tab A", host: "maasgroup.looplogics.com", hours: 2, billableHours: 2, topClient: "MaasGroup" }),
-      act({ label: "Tab B", host: "maasgroup.looplogics.com", hours: 1, billableHours: 1, topClient: "MaasGroup" }),
-      act({ label: "HN", host: "news.ycombinator.com", hours: 5, topClient: "Unassigned" }),
+      act({ label: "Tab A", host: "maasgroup.looplogics.com", hours: 2, billableHours: 2, topClient: "MaasGroup", topClientId: 2 }),
+      act({ label: "Tab B", host: "maasgroup.looplogics.com", hours: 1, billableHours: 1, topClient: "MaasGroup", topClientId: 2 }),
+      act({ label: "HN", host: "news.ycombinator.com", hours: 5, topClient: "Unassigned", topClientId: null }),
     ]);
 
     expect(groups).toHaveLength(2);
     // ycombinator (5h) ranks above looplogics (3h)
     expect(groups[0].site).toBe("news.ycombinator.com");
     expect(groups[0].hours).toBe(5);
+    expect(groups[0].topClientId).toBeNull(); // unassigned
 
     const loop = groups[1];
     expect(loop.site).toBe("maasgroup.looplogics.com");
     expect(loop.hours).toBe(3);
     expect(loop.billableHours).toBe(3);
     expect(loop.topClient).toBe("MaasGroup");
+    expect(loop.topClientId).toBe(2);
     // items sorted by hours desc within the group
     expect(loop.items.map((i) => i.label)).toEqual(["Tab A", "Tab B"]);
   });
@@ -43,12 +46,13 @@ describe("groupActivitiesBySite", () => {
     expect(groups[0].site).toBe("OUTLOOK.EXE");
   });
 
-  it("picks the dominant client by hours within a site", () => {
+  it("picks the dominant client (by hours) and surfaces its id", () => {
     const groups = groupActivitiesBySite([
-      act({ host: "shared.example.com", hours: 1, topClient: "Acme" }),
-      act({ host: "shared.example.com", hours: 4, topClient: "Globex" }),
+      act({ host: "shared.example.com", hours: 1, topClient: "Acme", topClientId: 2 }),
+      act({ host: "shared.example.com", hours: 4, topClient: "Globex", topClientId: 3 }),
     ]);
     expect(groups[0].topClient).toBe("Globex");
+    expect(groups[0].topClientId).toBe(3);
   });
 
   it("returns [] for no activities", () => {

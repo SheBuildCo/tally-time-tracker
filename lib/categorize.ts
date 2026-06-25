@@ -234,7 +234,7 @@ export interface EnrichmentLookup {
  */
 export function bucketUnassigned(
   categorized: Categorized[],
-  minSeconds = 60,
+  minSeconds = 5,
 ): UnassignedBucket[] {
   const sites = new Map<string, UnassignedBucket>();
   const titles = new Map<string, UnassignedBucket>();
@@ -291,7 +291,7 @@ export function bucketUnassigned(
  */
 export function suggestRules(
   categorized: Categorized[],
-  minSeconds = 60,
+  minSeconds = 5,
   enrich?: EnrichmentLookup,
 ): RuleSuggestion[] {
   const buckets = bucketUnassigned(categorized, minSeconds);
@@ -299,13 +299,10 @@ export function suggestRules(
   const suggestions: RuleSuggestion[] = buckets.map((b) => {
     if (b.kind === "site") {
       const e = enrich?.get(b.key);
-      // A per-client subdomain (e.g. maasgroup.looplogics.com) keeps its FULL
-      // host so each client gets its own rule; everything else collapses to the
-      // registrable domain as before.
-      const urlDomain =
-        e && e.isPerClientSubdomain && e.suggestedUrlDomain
-          ? e.suggestedUrlDomain
-          : (e?.suggestedUrlDomain ?? registrableDomain(b.key));
+      // Match the FULL host by default (e.g. acme.looplogics.com), so the
+      // suggestion label matches the Activity panel and per-client subdomains
+      // stay separate. The LLM cleanup may still override with a scoped domain.
+      const urlDomain = e?.suggestedUrlDomain ?? b.key;
       return withEnrichment(
         { match: { urlDomain }, label: b.key, seconds: b.seconds, kind: "site" },
         e,

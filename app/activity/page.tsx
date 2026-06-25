@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import {
   Table,
   TableBody,
@@ -10,20 +10,47 @@ import {
   TableRow,
 } from "@tremor/react";
 import LoadingGate from "@/components/LoadingGate";
+import { useDashboard } from "@/components/DashboardContext";
 import { EmptyState, PageHeading, Panel, Pill, SiteGroup } from "@/components/ui";
 import { formatHours } from "@/lib/format";
-import { groupActivitiesBySite } from "@/lib/group";
+import { groupActivitiesBySite, type SiteGroup as SiteGroupData } from "@/lib/group";
+import { api } from "@/lib/client";
+import type { Client } from "@/lib/types";
 
 type View = "sites" | "apps";
 
 export default function ActivityPage() {
   const [view, setView] = useState<View>("sites");
+  const { days, refresh } = useDashboard();
+  const [clients, setClients] = useState<Client[]>([]);
+
+  useEffect(() => {
+    api()
+      .listClients()
+      .then((r) => setClients(r.clients))
+      .catch(() => {});
+  }, []);
+
+  // Assigning a site creates a full-host rule, then re-syncs the viewed range so
+  // already-recorded time for that site moves to the chosen client too.
+  async function assignSite(group: SiteGroupData, clientId: number | null) {
+    const host = group.items.find((i) => i.host)?.host;
+    const match = host ? { urlDomain: host } : { app: group.site };
+    await api().createRule({
+      ...match,
+      clientId,
+      billable: clientId !== null,
+      priority: 50,
+    });
+    await api().resync(days);
+    refresh();
+  }
 
   return (
     <div>
       <PageHeading
         title="Sites & activity"
-        subtitle="Your time by site — expand a site to see the specific tabs and chats."
+        subtitle="Your time by site — expand a site to assign it to a client or see the specific tabs."
       />
 
       <LoadingGate>
@@ -54,7 +81,12 @@ export default function ActivityPage() {
                 ) : (
                   <div className="space-y-2">
                     {sites.map((g) => (
-                      <SiteGroup key={g.site} group={g} />
+                      <SiteGroup
+                        key={g.site}
+                        group={g}
+                        clients={clients}
+                        onAssign={(clientId) => assignSite(g, clientId)}
+                      />
                     ))}
                   </div>
                 )

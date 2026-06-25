@@ -9,6 +9,7 @@ import { ChevronRight } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { formatHours } from "@/lib/format";
 import type { SiteGroup as SiteGroupData } from "@/lib/group";
+import type { Client } from "@/lib/types";
 
 /** Pastel chart palette (Tremor colour names — used by retained Tremor charts). */
 export const CHART = {
@@ -183,8 +184,17 @@ export function Collapsible({
  * are revealed on expand. Unassigned groups are rendered muted (never an amber
  * alarm) — this is where the "de-emphasise unassigned" rule is centralised.
  */
-export function SiteGroup({ group }: { group: SiteGroupData }) {
-  const unassigned = !group.topClient || group.topClient === "Unassigned";
+export function SiteGroup({
+  group,
+  clients,
+  onAssign,
+}: {
+  group: SiteGroupData;
+  /** When provided (with onAssign), shows an inline "assign to client" row. */
+  clients?: Client[];
+  onAssign?: (clientId: number | null) => Promise<void> | void;
+}) {
+  const unassigned = group.topClientId === null;
   return (
     <Collapsible
       title={
@@ -219,6 +229,13 @@ export function SiteGroup({ group }: { group: SiteGroupData }) {
         </>
       }
     >
+      {clients && onAssign ? (
+        <AssignRow
+          clients={clients}
+          defaultClientId={group.topClientId}
+          onAssign={onAssign}
+        />
+      ) : null}
       <ul className="divide-y divide-slate-50">
         {group.items.map((item, i) => (
           <li
@@ -240,5 +257,59 @@ export function SiteGroup({ group }: { group: SiteGroupData }) {
         ))}
       </ul>
     </Collapsible>
+  );
+}
+
+/** Inline "assign this site to a client" control shown inside a SiteGroup. */
+function AssignRow({
+  clients,
+  defaultClientId,
+  onAssign,
+}: {
+  clients: Client[];
+  defaultClientId: number | null;
+  onAssign: (clientId: number | null) => Promise<void> | void;
+}) {
+  const [choice, setChoice] = useState<string>(
+    defaultClientId !== null ? String(defaultClientId) : "",
+  );
+  const [busy, setBusy] = useState(false);
+
+  async function assign() {
+    if (choice === "") return;
+    setBusy(true);
+    try {
+      await onAssign(choice === "internal" ? null : Number(choice));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="flex items-center gap-2 bg-slate-50/60 px-4 py-2 pl-11">
+      <span className="text-xs text-slate-400">Assign to</span>
+      <select
+        value={choice}
+        onChange={(e) => setChoice(e.target.value)}
+        disabled={busy}
+        className="rounded-lg border border-slate-200 bg-white px-2 py-1 text-sm text-slate-700"
+      >
+        <option value="">Choose…</option>
+        <option value="internal">Internal / non-billable</option>
+        {clients.map((c) => (
+          <option key={c.id} value={String(c.id)}>
+            {c.name}
+          </option>
+        ))}
+      </select>
+      <button
+        type="button"
+        onClick={assign}
+        disabled={busy || choice === ""}
+        className="rounded-lg bg-brand px-3 py-1 text-sm font-medium text-white transition-colors hover:bg-brand-strong disabled:cursor-not-allowed disabled:bg-slate-300"
+      >
+        {busy ? "Saving…" : "Assign"}
+      </button>
+    </div>
   );
 }

@@ -45,6 +45,7 @@ export default function SettingsPage() {
         <UnassignedSuggestions
           suggestions={report?.suggestions ?? []}
           clients={clients}
+          days={days}
           onCreated={async () => {
             await reload();
             refresh();
@@ -113,13 +114,16 @@ function CleanupButton({ days, onDone }: { days: number; onDone: () => void }) {
 function UnassignedSuggestions({
   suggestions,
   clients,
+  days,
   onCreated,
 }: {
   suggestions: RuleSuggestion[];
   clients: Client[];
+  days: number;
   onCreated: () => void;
 }) {
   const [assign, setAssign] = useState<Record<string, string>>({});
+  const [filter, setFilter] = useState("");
 
   // Pre-fill the dropdown to the client Claude suggested (when it matches one we
   // know), so a cleaned suggestion is one click to confirm.
@@ -155,17 +159,33 @@ function UnassignedSuggestions({
       billable,
       priority: 50, // user-created mappings win over seeded defaults
     });
+    // Re-categorise the viewed range so past time for this site moves too.
+    await api().resync(days);
     onCreated();
   }
+
+  const visible = filter.trim()
+    ? suggestions.filter((s) =>
+        `${s.cleanedLabel ?? ""} ${s.label}`
+          .toLowerCase()
+          .includes(filter.trim().toLowerCase()),
+      )
+    : suggestions;
 
   return (
     <Panel>
       <PanelTitle
         title="Unassigned usage"
-        subtitle="Assign each to a client (or mark internal) to capture it going forward."
+        subtitle="Assign each to a client (or mark internal). Applies across the current range."
       />
-      <div className="divide-y divide-slate-100">
-        {suggestions.slice(0, 12).map((s) => (
+      <input
+        value={filter}
+        onChange={(e) => setFilter(e.target.value)}
+        placeholder="Filter sites…"
+        className="mb-2 w-full rounded-lg border border-slate-200 px-3 py-1.5 text-sm text-slate-700 placeholder:text-slate-400"
+      />
+      <div className="max-h-[28rem] divide-y divide-slate-100 overflow-y-auto">
+        {visible.map((s) => (
           <div key={s.label} className="flex flex-wrap items-center gap-3 py-2.5">
             <div className="min-w-0 flex-1">
               <div className="flex items-center gap-2">
@@ -201,7 +221,7 @@ function UnassignedSuggestions({
             <button
               disabled={choiceFor(s) === ""}
               onClick={() => createRule(s)}
-              className="rounded-lg bg-violet-600 px-3 py-1.5 text-sm font-medium text-white disabled:cursor-not-allowed disabled:bg-slate-300"
+              className="rounded-lg bg-brand px-3 py-1.5 text-sm font-medium text-white hover:bg-brand-strong disabled:cursor-not-allowed disabled:bg-slate-300"
             >
               Add rule
             </button>

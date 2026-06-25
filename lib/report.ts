@@ -70,7 +70,7 @@ export async function buildReport(days = 7): Promise<Report> {
   const categorized = rowsToCategorized(rows);
   const clients = listClients();
   const summary = buildSummary(categorized, clients);
-  const suggestions = suggestRules(categorized, 60, cachedEnrichment());
+  const suggestions = suggestRules(categorized, 5, cachedEnrichment());
   return {
     ...summary,
     range: rangeMeta(days),

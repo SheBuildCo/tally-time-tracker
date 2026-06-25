@@ -95,21 +95,22 @@ describe("categorize", () => {
 });
 
 describe("suggestRules", () => {
-  it("surfaces unassigned sites as domain suggestions, largest first", () => {
+  it("surfaces unassigned sites as full-host suggestions, largest first", () => {
     const events = [
       usage({ url: "https://news.ycombinator.com/item?id=1", duration: 1200 }),
       usage({ url: "https://news.ycombinator.com/item?id=2", duration: 600 }),
       usage({ app: "slack.exe", url: undefined, duration: 300 }),
       // below threshold, should be dropped
-      usage({ url: "https://example.org/x", duration: 10 }),
+      usage({ url: "https://example.org/x", duration: 2 }),
     ];
     const categorized = categorizeAll(events, rules);
-    const suggestions = suggestRules(categorized, 60);
+    const suggestions = suggestRules(categorized);
 
     expect(suggestions[0].kind).toBe("site");
     expect(suggestions[0].label).toBe("news.ycombinator.com");
-    expect(suggestions[0].match.urlDomain).toBe("ycombinator.com");
-    // slack app suggestion present, example.org dropped (under threshold)
+    // full host, not the collapsed registrable domain
+    expect(suggestions[0].match.urlDomain).toBe("news.ycombinator.com");
+    // slack app suggestion present, example.org dropped (under the 5s floor)
     expect(suggestions.some((s) => s.label === "slack.exe")).toBe(true);
     expect(suggestions.some((s) => s.label === "example.org")).toBe(false);
   });
@@ -166,18 +167,18 @@ describe("suggestRules with enrichment", () => {
     expect(maas?.confidence).toBe(0.95);
   });
 
-  it("still collapses generic shared apps to the registrable domain", () => {
+  it("matches the full host when the LLM gives no scoped domain", () => {
     const s = suggestRules(categorized, 60, enrich);
     const asana = s.find((x) => x.label === "app.asana.com");
-    expect(asana?.match.urlDomain).toBe("asana.com");
+    expect(asana?.match.urlDomain).toBe("app.asana.com");
   });
 
-  it("without enrichment behaves exactly as before (collapses)", () => {
+  it("without enrichment matches the full host (no collapse)", () => {
     const s = suggestRules(categorized, 60);
     const maas = s.find((x) => x.label === "maasgroup.looplogics.com");
     const acme = s.find((x) => x.label === "acme.looplogics.com");
-    expect(maas?.match.urlDomain).toBe("looplogics.com");
-    expect(acme?.match.urlDomain).toBe("looplogics.com");
+    expect(maas?.match.urlDomain).toBe("maasgroup.looplogics.com");
+    expect(acme?.match.urlDomain).toBe("acme.looplogics.com");
     expect(maas?.cleanedLabel).toBeUndefined();
   });
 

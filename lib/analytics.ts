@@ -31,6 +31,7 @@ export interface ActivitySummary {
   hours: number;
   billableHours: number;
   topClient: string;
+  topClientId: number | null; // dominant client id (null = unassigned)
 }
 
 export interface DailyPoint {
@@ -209,16 +210,16 @@ export function buildSummary(
 
   const activitySummaries: ActivitySummary[] = [...activityAgg.entries()]
     .map(([label, agg]) => {
-      const topClientId = [...agg.byClient.entries()].sort(
-        (a, b) => b[1] - a[1],
-      )[0]?.[0];
+      const topClientId =
+        [...agg.byClient.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] ?? null;
       return {
         label,
         app: agg.app,
         host: agg.host,
         hours: hours(agg.seconds),
         billableHours: hours(agg.billableSeconds),
-        topClient: nameFor(topClientId ?? null),
+        topClient: nameFor(topClientId),
+        topClientId,
       };
     })
     .sort((a, b) => b.hours - a.hours);

@@ -8,7 +8,8 @@ export interface SiteGroup {
   site: string; // host when known, else the app name — the coarse "where"
   hours: number;
   billableHours: number;
-  topClient: string; // dominant client across the group's items (by hours)
+  topClient: string; // dominant client name across the group's items (by hours)
+  topClientId: number | null; // dominant client id (null = unassigned)
   items: ActivitySummary[]; // the specific activities, hours-desc
 }
 
@@ -28,7 +29,8 @@ export function groupActivitiesBySite(
       hours: number;
       billableHours: number;
       items: ActivitySummary[];
-      byClient: Map<string, number>; // client -> hours, to pick the dominant one
+      // dominant-client tally, keyed by client id (null = unassigned)
+      byClient: Map<number | null, { name: string; hours: number }>;
     }
   >();
 
@@ -42,30 +44,41 @@ export function groupActivitiesBySite(
     g.hours += a.hours;
     g.billableHours += a.billableHours;
     g.items.push(a);
-    if (a.topClient) {
-      g.byClient.set(a.topClient, (g.byClient.get(a.topClient) ?? 0) + a.hours);
-    }
+    const entry = g.byClient.get(a.topClientId) ?? {
+      name: a.topClient,
+      hours: 0,
+    };
+    entry.hours += a.hours;
+    g.byClient.set(a.topClientId, entry);
   }
 
   return [...groups.values()]
-    .map((g) => ({
-      site: g.site,
-      hours: g.hours,
-      billableHours: g.billableHours,
-      topClient: dominantClient(g.byClient),
-      items: g.items.sort((x, y) => y.hours - x.hours),
-    }))
+    .map((g) => {
+      const dominant = dominantClient(g.byClient);
+      return {
+        site: g.site,
+        hours: g.hours,
+        billableHours: g.billableHours,
+        topClient: dominant.name,
+        topClientId: dominant.id,
+        items: g.items.sort((x, y) => y.hours - x.hours),
+      };
+    })
     .sort((x, y) => y.hours - x.hours);
 }
 
-function dominantClient(byClient: Map<string, number>): string {
-  let best = "";
+function dominantClient(
+  byClient: Map<number | null, { name: string; hours: number }>,
+): { id: number | null; name: string } {
+  let bestId: number | null = null;
+  let bestName = "";
   let bestHours = -1;
-  for (const [client, hours] of byClient) {
+  for (const [id, { name, hours }] of byClient) {
     if (hours > bestHours) {
-      best = client;
+      bestId = id;
+      bestName = name;
       bestHours = hours;
     }
   }
-  return best;
+  return { id: bestId, name: bestName };
 }
