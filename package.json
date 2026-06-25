@@ -17,6 +17,7 @@
     "build:main": "node scripts/build-main.cjs",
     "export:next": "node scripts/export-electron.cjs",
     "electron:dev": "npm run build:main && concurrently -k \"next dev\" \"wait-on tcp:3000 && cross-env ELECTRON_DEV=1 electron .\"",
+    "electron:prod": "npm run export:next && npm run build:main && cross-env TALLY_FORCE_PROD=1 electron .",
     "dist": "npm run export:next && npm run build:main && electron-builder"
   },
   "dependencies": {

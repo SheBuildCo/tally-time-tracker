@@ -90,6 +90,14 @@ npm run dist       # static-exports the UI, bundles the Electron main, builds di
 npm run electron:dev   # Next dev server + Electron window via IPC
 ```
 
+### Smoke-test the *packaged* renderer without building an installer
+```bash
+npm run electron:prod  # static-exports, then loads the UI over app:// (production path)
+```
+This exercises the exact load path the installed app uses (the `app://` protocol
+serving the static export), so you can confirm styling and navigation work in
+seconds rather than waiting on a full `npm run dist`.
+
 ## Configuration
 
 Environment variables (all optional):
@@ -110,6 +118,7 @@ In the packaged app the database lives in the OS user-data folder (e.g.
 | `npm run dev`         | Dashboard in the browser (REST API)                   |
 | `npm test`            | Unit tests (categorize, analytics, persistence)       |
 | `npm run electron:dev`| Electron window against the dev server                |
+| `npm run electron:prod`| Electron window loading the static export over `app://` (packaged path) |
 | `npm run export:next` | Static-export the UI to `out/` (API routes excluded)  |
 | `npm run build:main`  | Bundle the Electron main/preload to `dist-electron/`  |
 | `npm run dist`        | Build the desktop installer (Windows → NSIS)          |
