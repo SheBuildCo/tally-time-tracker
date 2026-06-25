@@ -4,6 +4,24 @@ Tally reads autonomously-captured usage from **ActivityWatch** running locally.
 This guide gets the tracker capturing both **desktop apps** and **browser
 tabs/URLs** so Tally has data to work with.
 
+## What you need (at a glance)
+
+**Required**
+
+1. The **ActivityWatch** app installed and running (its installer bundles the two
+   watchers Tally needs — the window watcher and the idle watcher — automatically).
+2. The **ActivityWatch web-watcher browser extension**, so web time is tracked per
+   tab with real URLs (without it, browsers are tracked only by window title).
+
+**Optional**
+
+- An **Anthropic API key** (Settings → AI cleanup) to enable the AI title/site
+  cleanup. Tally is fully functional without it; the feature just needs outbound
+  internet to Anthropic when enabled.
+
+Everything else — the local data store and a set of starter clients/rules — is
+created automatically on first run. There's nothing else to configure.
+
 ## 1. Install ActivityWatch
 
 1. Download the Windows installer from <https://activitywatch.net/downloads/>.
@@ -26,10 +44,13 @@ Desktop apps are captured automatically, but to attribute **web** time (client P
 tools, Outlook on the web, Canva, …) ActivityWatch needs the browser extension,
 which reports the active tab's **URL** and title.
 
-Install the **ActivityWatch Web Watcher** for each browser the team uses:
+**Chrome is recommended** — it gives the most accurate per-tab tracking. Install the
+**ActivityWatch Web Watcher** for each browser the team uses:
 
-- **Chrome / Microsoft Edge / Comet** (all Chromium, the Chrome extension works):
-  search "ActivityWatch Web Watcher" in the Chrome Web Store and add it.
+- **Chrome (recommended)** — search "ActivityWatch Web Watcher" in the Chrome Web
+  Store and add it.
+- **Microsoft Edge / Comet** (also Chromium, the same Chrome extension works) —
+  install it from the Chrome Web Store as above.
 - **Firefox**: install from
   <https://addons.mozilla.org/firefox/addon/aw-watcher-web/>.
 
@@ -86,14 +107,24 @@ shows a clear "ActivityWatch isn't running" banner and falls back to saved histo
 
 ## 5. Map usage to clients
 
-Go to **Settings**:
+On first run Tally seeds a few starter clients (**Internal / Admin** and two example
+clients) and maps common apps (Outlook, Teams, Canva) to **Internal / non-billable**,
+so the dashboard has structure immediately. Add your own clients and assign your sites:
 
-- Tally pre-seeds your firm's common apps (Outlook, Teams, Canva) as
-  **Internal / non-billable**.
-- The **Unassigned usage** list shows apps/sites with no rule yet — pick a client
-  (or "Internal") and click **Add rule**. Client web apps are matched by domain,
-  so a PM tool used under a client's login maps cleanly to that client.
-- Add your real **clients** and their **billable rates** in the Clients section.
+- **Add your clients & rates** — **Settings → Clients & rates**: enter each client's
+  name and hourly rate, then **Add client**.
+- **Assign a site to a client** — two equivalent ways, both create a rule for that
+  **exact site** and immediately re-attribute that site's already-recorded time across
+  the dates you're viewing:
+  - **From the Activity tab** (easiest): in the **"By site"** view, expand a site and
+    use the inline **Assign to → client → Assign** control.
+  - **From Settings → Unassigned usage**: every unmapped site is listed (use the
+    **Filter sites…** box to find one), pick a client (or **Internal / non-billable**)
+    and click **Add rule**.
+- **Two buttons in Settings**, for occasional housekeeping:
+  - **Re-sync with current rules** — re-applies all your rules across the selected date
+    range (use it after editing or deleting rules in bulk).
+  - **Clean up titles & sites** — the optional AI pass (see step 6).
 
 That's the only setup. From then on tracking is automatic and time flows into the
 right client's billables.
@@ -105,14 +136,17 @@ Some platforms give each client their own subdomain (e.g.
 up messy tab titles and split those per-client sites so each is billed to the
 right client instead of being lumped under one `looplogics.com` rule.
 
-- In **Settings → AI cleanup**, paste a shared Anthropic API key. It's stored
-  locally on that machine and never shown again.
+- In **Settings → AI cleanup**, paste a shared Anthropic API key and click **Save
+  key**. It's stored locally on that machine and never shown again.
 - Click **Clean up titles & sites** (also runs automatically after a re-sync).
   Confident client matches are applied for you; anything uncertain is left in the
   **Unassigned usage** list with the suggested client pre-filled for a one-click
   confirm.
 
-Without a key, Tally still works exactly as before — this feature is additive.
+This feature is **optional and additive** — without a key, Tally works exactly as
+before (titles just stay as the raw window title). When enabled it needs **outbound
+internet** to Anthropic (`api.anthropic.com`), so allow that if your machine is behind
+a strict firewall.
 
 ## Troubleshooting
 
@@ -124,8 +158,9 @@ Without a key, Tally still works exactly as before — this feature is additive.
 | Browser shows "0s active"            | Expected when it was open but not the focused window — idle/background time is excluded. |
 | Edge not tracked                     | Install the Chrome Web Store extension in Edge (it's Chromium).      |
 | Wrong client on a site               | Edit/replace the mapping rule in **Settings → Mapping rules**.       |
+| Site shows in Activity but I can't assign it | Assign it inline on the **Activity → By site** view, or find it in **Settings → Unassigned usage** (use the filter) — every site is listed now, however briefly visited. |
 | Comet/other browser tab not mapped   | Map it by **title** in Settings → Unassigned usage (no URL needed).  |
-| Changed rules, old time still wrong  | Click **Re-sync with current rules** in Settings.                   |
+| Changed rules in bulk, old time still wrong | Click **Re-sync with current rules** in Settings (assigning a single site already re-syncs on its own). |
 | AW on a non-default port             | Set `AW_BASE_URL` before starting Tally.                             |
 
 ## Building the installer (for whoever distributes Tally)
