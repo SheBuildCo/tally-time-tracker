@@ -48,7 +48,9 @@ function migrate(db: Database.Database): void {
     );
     -- Per-day rollup of categorized usage. client_id uses -1 for "no client"
     -- (so the primary key works; SQLite treats NULLs as distinct). 'unassigned'
-    -- distinguishes "no rule matched" from an explicit null-client rule.
+    -- distinguishes "no rule matched" from an explicit null-client rule. 'host'
+    -- is part of the key because the rollup groups by it (lib/ingest.ts) — two
+    -- tabs with the same title on different domains are distinct activities.
     CREATE TABLE IF NOT EXISTS daily_activity (
       day        TEXT NOT NULL,
       client_id  INTEGER NOT NULL,        -- -1 = no client
@@ -58,13 +60,51 @@ function migrate(db: Database.Database): void {
       billable   INTEGER NOT NULL DEFAULT 0,
       unassigned INTEGER NOT NULL DEFAULT 0,
       seconds    INTEGER NOT NULL DEFAULT 0,
-      PRIMARY KEY (day, client_id, app, activity, billable, unassigned)
+      PRIMARY KEY (day, client_id, app, activity, host, billable, unassigned)
     );
     -- Days whose rollup is complete (the day is over and was ingested).
     CREATE TABLE IF NOT EXISTS day_finalized (
       day          TEXT PRIMARY KEY,
       finalized_at TEXT NOT NULL
     );
+  `);
+  migrateDailyActivityPk(db);
+}
+
+// Early builds created daily_activity with a primary key that omitted `host`,
+// while the ingest rollup groups by host — so two activities differing only by
+// host collided on INSERT ("UNIQUE constraint failed"). Rebuild the table with
+// host in the key. The rollup is a regenerable cache, but we copy existing rows
+// (summing seconds defensively) so no history is lost on upgrade.
+function migrateDailyActivityPk(db: Database.Database): void {
+  const cols = db.prepare("PRAGMA table_info(daily_activity)").all() as Array<{
+    name: string;
+    pk: number;
+  }>;
+  const hostInPk = cols.some((c) => c.name === "host" && c.pk > 0);
+  if (hostInPk) return; // already on the new schema (or fresh install)
+
+  db.exec(`
+    BEGIN;
+    ALTER TABLE daily_activity RENAME TO daily_activity_legacy;
+    CREATE TABLE daily_activity (
+      day        TEXT NOT NULL,
+      client_id  INTEGER NOT NULL,
+      app        TEXT NOT NULL,
+      activity   TEXT NOT NULL,
+      host       TEXT NOT NULL DEFAULT '',
+      billable   INTEGER NOT NULL DEFAULT 0,
+      unassigned INTEGER NOT NULL DEFAULT 0,
+      seconds    INTEGER NOT NULL DEFAULT 0,
+      PRIMARY KEY (day, client_id, app, activity, host, billable, unassigned)
+    );
+    INSERT INTO daily_activity
+      (day, client_id, app, activity, host, billable, unassigned, seconds)
+      SELECT day, client_id, app, activity, host, billable, unassigned, SUM(seconds)
+      FROM daily_activity_legacy
+      GROUP BY day, client_id, app, activity, host, billable, unassigned;
+    DROP TABLE daily_activity_legacy;
+    COMMIT;
   `);
 }
 

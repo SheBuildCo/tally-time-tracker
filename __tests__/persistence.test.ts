@@ -96,4 +96,33 @@ describe("daily_activity persistence round-trip", () => {
     markFinalized("2026-06-23", "2026-06-24T00:00:00.000Z");
     expect(isFinalized("2026-06-23")).toBe(true);
   });
+
+  // Regression: the rollup groups by host, so two activities with the same
+  // cleaned title on different domains are distinct rows. host must be part of
+  // the storage key or the second INSERT hits a UNIQUE-constraint collision.
+  it("persists same-title activities on different hosts without collision", () => {
+    const day = "2026-06-22";
+    const sameTitle = [
+      usage({
+        url: "https://app.foo.com/x",
+        title: "Dashboard",
+        duration: 600,
+        timestamp: `${day}T09:00:00.000Z`,
+      }),
+      usage({
+        url: "https://app.bar.com/y",
+        title: "Dashboard",
+        duration: 1200,
+        timestamp: `${day}T10:00:00.000Z`,
+      }),
+    ];
+    const rows = rollup(categorizeAll(sameTitle, rules));
+    expect(rows.length).toBe(2); // distinct by host
+
+    expect(() => replaceDayActivity(day, rows)).not.toThrow();
+    const back = getActivityRows(day, day);
+    expect(back.length).toBe(2);
+    expect(new Set(back.map((r) => r.host)).size).toBe(2);
+    expect(back.reduce((s, r) => s + r.seconds, 0)).toBe(1800);
+  });
 });
