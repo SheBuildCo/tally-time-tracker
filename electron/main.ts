@@ -116,6 +116,8 @@ function registerIpc(h: Handlers): void {
     listRules: () => h.getRules(),
     createRule: (body: any) => h.addRule(body),
     deleteRule: (id: number) => h.removeRule(id),
+    createChromeProfile: (input: any) => h.createChromeProfile(input),
+    launchChromeProfile: (input: any) => h.launchClientProfile(input),
   };
   for (const [name, fn] of Object.entries(map)) {
     ipcMain.handle(`tally:${name}`, (_event, ...args) => fn(...args));

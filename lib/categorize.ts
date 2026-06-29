@@ -72,7 +72,7 @@ export function isBrowserApp(app: string): boolean {
  * (e.g. "Inbox - me@co - Comet", "Chat | Jane | Microsoft Teams"). Stripped by
  * `cleanTitle` so the remaining text is the actual tab/document/chat.
  */
-const TITLE_SUFFIXES = [
+export const TITLE_SUFFIXES = [
   "Comet",
   "Google Chrome",
   "Chromium",
@@ -113,10 +113,19 @@ export function cleanTitle(title: string | undefined): string {
 /** Does a single rule's match clause apply to this event? */
 export function ruleMatches(match: RuleMatch, event: UsageEvent): boolean {
   // An empty match clause never matches (guards against catch-all rules slipping in).
-  if (!match.app && !match.titleRegex && !match.urlDomain) return false;
+  if (!match.app && !match.titleRegex && !match.urlDomain && !match.profile)
+    return false;
 
   if (match.app && match.app.toLowerCase() !== event.app.toLowerCase()) {
     return false;
+  }
+  if (match.profile) {
+    if (
+      !event.profile ||
+      event.profile.toLowerCase() !== match.profile.toLowerCase()
+    ) {
+      return false;
+    }
   }
   if (match.titleRegex) {
     let re: RegExp;

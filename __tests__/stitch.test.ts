@@ -1,6 +1,27 @@
 import { describe, expect, it } from "vitest";
-import { stitchUsage } from "@/lib/activitywatch";
+import { extractProfile, stitchUsage } from "@/lib/activitywatch";
 import { awEvent } from "./fixtures";
+
+describe("extractProfile", () => {
+  it("pulls the profile segment before the browser suffix", () => {
+    expect(extractProfile("Inbox - Acme Corp - Google Chrome")).toBe("Acme Corp");
+  });
+  it("returns undefined for a single-profile title (no profile segment)", () => {
+    expect(extractProfile("Some Page - Google Chrome")).toBeUndefined();
+  });
+  it("returns undefined for non-Chrome two-segment titles", () => {
+    expect(extractProfile("New Tab - Comet")).toBeUndefined();
+  });
+  it("takes the second-to-last segment when the page title has dashes", () => {
+    expect(
+      extractProfile("Re: Q3 - notes - Acme Client - Google Chrome"),
+    ).toBe("Acme Client");
+  });
+  it("returns undefined for empty/garbage", () => {
+    expect(extractProfile("")).toBeUndefined();
+    expect(extractProfile(undefined)).toBeUndefined();
+  });
+});
 
 describe("stitchUsage", () => {
   const browserApps = new Set(["chrome.exe"]);
@@ -107,5 +128,40 @@ describe("stitchUsage", () => {
     expect(out[0].title).toBe("Some Page — Google Chrome");
     expect(out[0].url).toBeUndefined();
     expect(out[0].duration).toBe(300);
+  });
+
+  it("stamps the window's profile onto every tab, though tab titles lack it", () => {
+    // The profile lives only in the OS window title; the extension's per-tab
+    // titles don't carry it. Both derived events must still get the profile.
+    const windows = [
+      awEvent("2026-06-23T09:00:00.000Z", 600, {
+        app: "chrome.exe",
+        title: "Dashboard - Acme Corp - Google Chrome",
+      }),
+    ];
+    const web = [
+      awEvent("2026-06-23T09:00:00.000Z", 300, {
+        url: "https://a.example.com",
+        title: "A",
+      }),
+      awEvent("2026-06-23T09:05:00.000Z", 300, {
+        url: "https://b.example.com",
+        title: "B",
+      }),
+    ];
+    const out = stitchUsage(windows, web, browserApps);
+    expect(out).toHaveLength(2);
+    expect(out.map((e) => e.profile)).toEqual(["Acme Corp", "Acme Corp"]);
+  });
+
+  it("stamps the profile on the no-web passthrough branch too", () => {
+    const windows = [
+      awEvent("2026-06-23T09:00:00.000Z", 300, {
+        app: "chrome.exe",
+        title: "Some Page - Acme Corp - Google Chrome",
+      }),
+    ];
+    const out = stitchUsage(windows, [], browserApps);
+    expect(out[0].profile).toBe("Acme Corp");
   });
 });

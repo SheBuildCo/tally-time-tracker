@@ -132,6 +132,42 @@ describe("daily_activity persistence round-trip", () => {
     expect(new Set(back.map((r) => r.host)).size).toBe(2);
     expect(back.reduce((s, r) => s + r.seconds, 0)).toBe(1800);
   });
+
+  // The Chrome profile is part of the rollup key, so the same activity under two
+  // different profiles stays distinct (and round-trips through storage).
+  it("keeps same activity under different profiles distinct, preserving profile", () => {
+    const day = "2026-06-21";
+    const sameSite = [
+      usage({
+        url: "https://www.primeeco.tech/x",
+        title: "Prime",
+        profile: "Acme Corp",
+        duration: 600,
+        timestamp: `${day}T09:00:00.000Z`,
+      }),
+      usage({
+        url: "https://www.primeeco.tech/x",
+        title: "Prime",
+        profile: "Globex",
+        duration: 1200,
+        timestamp: `${day}T10:00:00.000Z`,
+      }),
+    ];
+    const rows = rollup(categorizeAll(sameSite, rules));
+    expect(rows.length).toBe(2); // distinct by profile
+
+    replaceDayActivity(day, rows);
+    const back = getActivityRows(day, day);
+    expect(back.length).toBe(2);
+    expect(new Set(back.map((r) => r.profile))).toEqual(
+      new Set(["Acme Corp", "Globex"]),
+    );
+
+    // rowsToCategorized restores the profile onto the synthetic event.
+    expect(new Set(rowsToCategorized(back).map((c) => c.event.profile))).toEqual(
+      new Set(["Acme Corp", "Globex"]),
+    );
+  });
 });
 
 describe("cleanup_cache persistence", () => {

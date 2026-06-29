@@ -41,13 +41,16 @@ function migrate(db: Database.Database): void {
       id            INTEGER PRIMARY KEY AUTOINCREMENT,
       name          TEXT NOT NULL UNIQUE,
       billable_rate REAL NOT NULL DEFAULT 0,
-      color         TEXT
+      color         TEXT,
+      chrome_profile_dir  TEXT,  -- Chrome --profile-directory Tally provisioned
+      chrome_profile_name TEXT   -- the profile's display name (matched in titles)
     );
     CREATE TABLE IF NOT EXISTS rules (
       id          INTEGER PRIMARY KEY AUTOINCREMENT,
       match_app   TEXT,
       match_title TEXT,
       match_domain TEXT,
+      match_profile TEXT,
       client_id   INTEGER REFERENCES clients(id) ON DELETE SET NULL,
       project     TEXT,
       billable    INTEGER NOT NULL DEFAULT 1,
@@ -64,10 +67,11 @@ function migrate(db: Database.Database): void {
       app        TEXT NOT NULL,
       activity   TEXT NOT NULL,           -- cleaned window title (fine label)
       host       TEXT NOT NULL DEFAULT '',
+      profile    TEXT NOT NULL DEFAULT '', -- Chrome profile name (client signal)
       billable   INTEGER NOT NULL DEFAULT 0,
       unassigned INTEGER NOT NULL DEFAULT 0,
       seconds    INTEGER NOT NULL DEFAULT 0,
-      PRIMARY KEY (day, client_id, app, activity, host, billable, unassigned)
+      PRIMARY KEY (day, client_id, app, activity, host, profile, billable, unassigned)
     );
     -- Days whose rollup is complete (the day is over and was ingested).
     CREATE TABLE IF NOT EXISTS day_finalized (
@@ -94,7 +98,62 @@ function migrate(db: Database.Database): void {
       value TEXT
     );
   `);
+  // Add columns to pre-existing tables (no-ops on fresh installs, which already
+  // have them from the CREATE TABLE above). ALTER ADD COLUMN is cheap and safe.
+  addColumnIfMissing(db, "clients", "chrome_profile_dir", "TEXT");
+  addColumnIfMissing(db, "clients", "chrome_profile_name", "TEXT");
+  addColumnIfMissing(db, "rules", "match_profile", "TEXT");
   migrateDailyActivityPk(db);
+  migrateDailyActivityProfile(db);
+}
+
+/** Add a column to an existing table if it isn't already present. */
+function addColumnIfMissing(
+  db: Database.Database,
+  table: string,
+  column: string,
+  decl: string,
+): void {
+  const cols = db
+    .prepare(`PRAGMA table_info(${table})`)
+    .all() as Array<{ name: string }>;
+  if (cols.some((c) => c.name === column)) return;
+  db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${decl}`);
+}
+
+// daily_activity gained a `profile` column (the Chrome profile name) that is part
+// of the rollup key, so two otherwise-identical activities under different
+// profiles stay distinct. Rebuild the table with profile in the primary key,
+// defaulting existing rows to '' (a re-sync repopulates the recomputed range).
+function migrateDailyActivityProfile(db: Database.Database): void {
+  const cols = db.prepare("PRAGMA table_info(daily_activity)").all() as Array<{
+    name: string;
+  }>;
+  if (cols.some((c) => c.name === "profile")) return; // already migrated/fresh
+
+  db.exec(`
+    BEGIN;
+    ALTER TABLE daily_activity RENAME TO daily_activity_legacy;
+    CREATE TABLE daily_activity (
+      day        TEXT NOT NULL,
+      client_id  INTEGER NOT NULL,
+      app        TEXT NOT NULL,
+      activity   TEXT NOT NULL,
+      host       TEXT NOT NULL DEFAULT '',
+      profile    TEXT NOT NULL DEFAULT '',
+      billable   INTEGER NOT NULL DEFAULT 0,
+      unassigned INTEGER NOT NULL DEFAULT 0,
+      seconds    INTEGER NOT NULL DEFAULT 0,
+      PRIMARY KEY (day, client_id, app, activity, host, profile, billable, unassigned)
+    );
+    INSERT INTO daily_activity
+      (day, client_id, app, activity, host, profile, billable, unassigned, seconds)
+      SELECT day, client_id, app, activity, host, '', billable, unassigned, SUM(seconds)
+      FROM daily_activity_legacy
+      GROUP BY day, client_id, app, activity, host, billable, unassigned;
+    DROP TABLE daily_activity_legacy;
+    COMMIT;
+  `);
 }
 
 // Early builds created daily_activity with a primary key that omitted `host`,
@@ -143,6 +202,7 @@ export interface DailyActivityRow {
   app: string;
   activity: string;
   host: string;
+  profile: string;
   billable: boolean;
   unassigned: boolean;
   seconds: number;
@@ -154,6 +214,7 @@ interface DailyActivityDbRow {
   app: string;
   activity: string;
   host: string;
+  profile: string;
   billable: number;
   unassigned: number;
   seconds: number;
@@ -166,6 +227,7 @@ function toDailyRow(r: DailyActivityDbRow): DailyActivityRow {
     app: r.app,
     activity: r.activity,
     host: r.host,
+    profile: r.profile,
     billable: !!r.billable,
     unassigned: !!r.unassigned,
     seconds: r.seconds,
@@ -181,8 +243,8 @@ export function replaceDayActivity(
   const del = db.prepare("DELETE FROM daily_activity WHERE day = ?");
   const ins = db.prepare(
     `INSERT INTO daily_activity
-       (day, client_id, app, activity, host, billable, unassigned, seconds)
-     VALUES (@day, @client_id, @app, @activity, @host, @billable, @unassigned, @seconds)`,
+       (day, client_id, app, activity, host, profile, billable, unassigned, seconds)
+     VALUES (@day, @client_id, @app, @activity, @host, @profile, @billable, @unassigned, @seconds)`,
   );
   const tx = db.transaction((rs: DailyActivityRow[]) => {
     del.run(day);
@@ -193,6 +255,7 @@ export function replaceDayActivity(
         app: r.app,
         activity: r.activity,
         host: r.host,
+        profile: r.profile,
         billable: r.billable ? 1 : 0,
         unassigned: r.unassigned ? 1 : 0,
         seconds: Math.round(r.seconds),
@@ -364,12 +427,15 @@ interface ClientRow {
   name: string;
   billable_rate: number;
   color: string | null;
+  chrome_profile_dir: string | null;
+  chrome_profile_name: string | null;
 }
 interface RuleRow {
   id: number;
   match_app: string | null;
   match_title: string | null;
   match_domain: string | null;
+  match_profile: string | null;
   client_id: number | null;
   project: string | null;
   billable: number;
@@ -382,6 +448,8 @@ function toClient(r: ClientRow): Client {
     name: r.name,
     billableRate: r.billable_rate,
     color: r.color ?? undefined,
+    chromeProfileDir: r.chrome_profile_dir ?? undefined,
+    chromeProfileName: r.chrome_profile_name ?? undefined,
   };
 }
 
@@ -390,6 +458,7 @@ function toRule(r: RuleRow): MappingRule {
   if (r.match_app) match.app = r.match_app;
   if (r.match_title) match.titleRegex = r.match_title;
   if (r.match_domain) match.urlDomain = r.match_domain;
+  if (r.match_profile) match.profile = r.match_profile;
   return {
     id: r.id,
     match,
@@ -448,6 +517,20 @@ export function deleteClient(id: number): void {
   connect().prepare("DELETE FROM clients WHERE id = ?").run(id);
 }
 
+/** Record the Chrome profile (directory + display name) Tally provisioned for a client. */
+export function setClientChromeProfile(
+  id: number,
+  dir: string,
+  name: string,
+): Client | undefined {
+  connect()
+    .prepare(
+      "UPDATE clients SET chrome_profile_dir = ?, chrome_profile_name = ? WHERE id = ?",
+    )
+    .run(dir, name, id);
+  return getClient(id);
+}
+
 // ---- rules ---------------------------------------------------------------
 
 export function listRules(): MappingRule[] {
@@ -468,13 +551,14 @@ export interface RuleInput {
 export function createRule(input: RuleInput): MappingRule {
   const info = connect()
     .prepare(
-      `INSERT INTO rules (match_app, match_title, match_domain, client_id, project, billable, priority)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO rules (match_app, match_title, match_domain, match_profile, client_id, project, billable, priority)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
     )
     .run(
       input.match.app ?? null,
       input.match.titleRegex ?? null,
       input.match.urlDomain ?? null,
+      input.match.profile ?? null,
       input.clientId,
       input.project ?? null,
       input.billable === false ? 0 : 1,
