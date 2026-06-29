@@ -57,15 +57,16 @@ export function rollup(categorized: Categorized[]): DailyActivityRow[] {
     const app = c.event.app;
     const activity = activityLabel(c.event);
     const host = hostOf(c.event.url);
+    const profile = c.event.profile ?? "";
     const billable = c.billable;
     const unassigned = c.matchedRuleId === null;
     const clientId = c.clientId;
-    const key = `${day}|${clientId ?? "n"}|${app}|${activity}|${host}|${
+    const key = `${day}|${clientId ?? "n"}|${app}|${activity}|${host}|${profile}|${
       billable ? 1 : 0
     }|${unassigned ? 1 : 0}`;
     const row =
       agg.get(key) ??
-      { day, clientId, app, activity, host, billable, unassigned, seconds: 0 };
+      { day, clientId, app, activity, host, profile, billable, unassigned, seconds: 0 };
     row.seconds += c.event.duration;
     agg.set(key, row);
   }
@@ -83,6 +84,7 @@ export function rowsToCategorized(rows: DailyActivityRow[]): Categorized[] {
       app: r.app,
       title: r.activity,
       url: r.host || undefined,
+      profile: r.profile || undefined,
       duration: r.seconds,
       timestamp: `${r.day}T12:00:00.000Z`,
     };

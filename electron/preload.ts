@@ -27,6 +27,8 @@ const tally = {
   listRules: () => invoke("listRules"),
   createRule: (body: unknown) => invoke("createRule", body),
   deleteRule: (id: number) => invoke("deleteRule", id),
+  createChromeProfile: (input: unknown) => invoke("createChromeProfile", input),
+  launchChromeProfile: (input: unknown) => invoke("launchChromeProfile", input),
 };
 
 contextBridge.exposeInMainWorld("tally", tally);

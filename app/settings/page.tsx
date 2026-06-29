@@ -297,6 +297,65 @@ function ApiKeyCard() {
 
 /* ---------------- Clients ---------------- */
 
+/** Per-client Chrome profile: create one, or launch the existing one. */
+function ClientProfileControl({
+  client,
+  onChange,
+}: {
+  client: Client;
+  onChange: () => void;
+}) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function run(fn: () => Promise<unknown>) {
+    setBusy(true);
+    setError(null);
+    try {
+      await fn();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Failed");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  if (client.chromeProfileDir) {
+    return (
+      <div className="flex items-center gap-2">
+        <Pill tone="good">
+          Profile: {client.chromeProfileName ?? client.name}
+        </Pill>
+        <button
+          disabled={busy}
+          onClick={() => run(() => api().launchChromeProfile({ clientId: client.id }))}
+          className="rounded-lg bg-white px-3 py-1.5 text-sm font-medium text-slate-600 ring-1 ring-slate-200 hover:bg-slate-50 disabled:opacity-60"
+        >
+          {busy ? "Opening…" : "Open"}
+        </button>
+        {error && <span className="text-xs text-rose-500">{error}</span>}
+      </div>
+    );
+  }
+  return (
+    <div className="flex items-center gap-2">
+      <button
+        disabled={busy}
+        onClick={() =>
+          run(async () => {
+            await api().createChromeProfile({ clientId: client.id });
+            onChange();
+          })
+        }
+        className="rounded-lg bg-brand px-3 py-1.5 text-sm font-medium text-white hover:bg-brand-strong disabled:opacity-60"
+      >
+        {busy ? "Creating…" : "Create Chrome profile"}
+      </button>
+      {error && <span className="text-xs text-rose-500">{error}</span>}
+    </div>
+  );
+}
+
 function ClientsCard({
   clients,
   onChange,
@@ -328,11 +387,15 @@ function ClientsCard({
 
   return (
     <Panel>
-      <PanelTitle title="Clients & rates" />
+      <PanelTitle
+        title="Clients & Chrome profiles"
+        subtitle="Give each client a Chrome profile — Tally attributes browser time by the profile it's running under (the most accurate signal). App/site rules below are the fallback."
+      />
       <div className="space-y-2">
         {clients.map((c) => (
-          <div key={c.id} className="flex items-center gap-3">
-            <div className="flex-1 font-medium text-slate-700">{c.name}</div>
+          <div key={c.id} className="flex flex-wrap items-center gap-3">
+            <div className="min-w-0 flex-1 font-medium text-slate-700">{c.name}</div>
+            <ClientProfileControl client={c} onChange={onChange} />
             <div className="flex items-center gap-1 text-sm text-slate-400">
               <span>$</span>
               <input
@@ -405,6 +468,7 @@ function RulesCard({
 
   function describe(r: MappingRule): string {
     const parts: string[] = [];
+    if (r.match.profile) parts.push(`profile = ${r.match.profile}`);
     if (r.match.app) parts.push(`app = ${r.match.app}`);
     if (r.match.urlDomain) parts.push(`site = ${r.match.urlDomain}`);
     if (r.match.titleRegex) parts.push(`title ~ /${r.match.titleRegex}/`);
@@ -415,7 +479,7 @@ function RulesCard({
     <Panel>
       <PanelTitle
         title="Mapping rules"
-        subtitle="First match wins (lowest priority number first). Rules from suggestions outrank seeded defaults."
+        subtitle="First match wins (lowest priority number first). Chrome-profile rules outrank site/title rules, which outrank seeded defaults."
       />
       <div className="space-y-1">
         {[...rules]

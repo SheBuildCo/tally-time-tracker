@@ -36,6 +36,10 @@ export interface TallyApi {
   listRules(): Promise<{ rules: MappingRule[] }>;
   createRule(body: Record<string, unknown>): Promise<{ rule: MappingRule }>;
   deleteRule(id: number): Promise<{ ok: boolean }>;
+  createChromeProfile(input: {
+    clientId: number;
+  }): Promise<{ client: Client; rule: MappingRule | null }>;
+  launchChromeProfile(input: { clientId: number }): Promise<{ ok: boolean }>;
 }
 
 declare global {
@@ -83,6 +87,10 @@ const restApi: TallyApi = {
   createRule: (body) =>
     http(`/api/rules`, { method: "POST", body: JSON.stringify(body) }),
   deleteRule: (id) => http(`/api/rules/${id}`, { method: "DELETE" }),
+  createChromeProfile: (input) =>
+    http(`/api/chrome/profile`, { method: "POST", body: JSON.stringify(input) }),
+  launchChromeProfile: (input) =>
+    http(`/api/chrome/launch`, { method: "POST", body: JSON.stringify(input) }),
 };
 
 /** Pick the IPC bridge when running inside Electron, else the REST client. */

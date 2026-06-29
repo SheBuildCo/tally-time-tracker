@@ -56,6 +56,14 @@ describe("ruleMatches", () => {
       false,
     );
   });
+  it("matches the Chrome profile case-insensitively", () => {
+    expect(
+      ruleMatches({ profile: "Acme Corp" }, usage({ profile: "acme corp" })),
+    ).toBe(true);
+  });
+  it("fails a profile clause when the event has no profile", () => {
+    expect(ruleMatches({ profile: "Acme Corp" }, usage({}))).toBe(false);
+  });
 });
 
 describe("categorize", () => {
@@ -91,6 +99,29 @@ describe("categorize", () => {
     const c = categorize(ev, rules);
     expect(c.clientId).toBe(3);
     expect(c.billable).toBe(true);
+  });
+
+  it("a profile rule (p10) beats a domain rule (p50) for the same event", () => {
+    // Same shared site, but the tab is running under Globex's Chrome profile.
+    const withProfile = [
+      ...rules,
+      {
+        id: 30,
+        match: { profile: "Globex" },
+        clientId: 3,
+        project: null,
+        billable: true,
+        priority: 10,
+      },
+    ];
+    const ev = usage({
+      app: "chrome.exe",
+      url: "https://acme.atlassian.net/x", // would otherwise map to Acme (id 2)
+      profile: "Globex",
+    });
+    const c = categorize(ev, withProfile);
+    expect(c.clientId).toBe(3);
+    expect(c.matchedRuleId).toBe(30);
   });
 });
 

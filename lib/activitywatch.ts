@@ -4,6 +4,7 @@
 // a query engine (AQL) over POST /api/0/query/. We never write to it — Tally is
 // purely a consumer of the autonomously-captured data.
 
+import { TITLE_SUFFIXES } from "./categorize";
 import type { AWBucket, AWEvent, UsageEvent } from "./types";
 
 const AW_BASE_URL =
@@ -194,6 +195,32 @@ function knownBrowserApps(buckets: Record<string, AWBucket>): Set<string> {
   return apps;
 }
 
+/** Known browser-suffix segments, lowercased, for trailing-segment matching. */
+const BROWSER_SUFFIX_SET = new Set(
+  TITLE_SUFFIXES.map((s) => s.toLowerCase()),
+);
+
+/**
+ * Pull the Chrome profile display name out of an OS window title.
+ *
+ * Chrome (with >1 profile) titles windows as
+ * "Page Title - Profile Name - Google Chrome", so the profile is the segment
+ * immediately before the trailing browser suffix. We require >=3 space-padded
+ * segments AND a recognised browser as the last one, so single-profile titles
+ * ("Page - Google Chrome") and non-Chrome browsers return undefined. Splitting
+ * only on space-padded separators avoids breaking hyphenated words ("co-op").
+ */
+export function extractProfile(windowTitle: string | undefined): string | undefined {
+  const t = (windowTitle ?? "").replace(/\s+/g, " ").trim();
+  if (!t) return undefined;
+  const segments = t.split(/\s[-—|]\s/);
+  if (segments.length < 3) return undefined;
+  const last = segments[segments.length - 1].trim().toLowerCase();
+  if (!BROWSER_SUFFIX_SET.has(last)) return undefined;
+  const profile = segments[segments.length - 2].trim();
+  return profile || undefined;
+}
+
 /**
  * Convert AW events into UsageEvent[].
  *
@@ -227,6 +254,10 @@ export function stitchUsage(
     const title = String(e.data.title ?? "");
     const start = Date.parse(e.timestamp);
     const end = start + e.duration * 1000;
+    // The profile lives only in the OS *window* title (not the extension's
+    // per-tab title), and belongs to the whole window — so extract it once here
+    // and stamp it onto every event derived from this slice.
+    const profile = extractProfile(title);
 
     if (browserApps.has(app.toLowerCase())) {
       const overlaps = overlappingWeb(webByStart, start, end);
@@ -239,12 +270,15 @@ export function stitchUsage(
             timestamp: new Date(Math.max(start, w.start)).toISOString(),
           };
           if (w.url) out.url = w.url;
+          if (profile) out.profile = profile;
           return out;
         });
       }
     }
     // Non-browser slice, or browser slice with no extension data: keep as-is.
-    return [{ app, title, duration: e.duration, timestamp: e.timestamp }];
+    const out: UsageEvent = { app, title, duration: e.duration, timestamp: e.timestamp };
+    if (profile) out.profile = profile;
+    return [out];
   });
 }
 

@@ -26,6 +26,7 @@ export interface UsageEvent {
   app: string; // e.g. "OUTLOOK.EXE", "ms-teams.exe", "chrome.exe"
   title: string; // window title
   url?: string; // active tab URL, when app is a tracked browser
+  profile?: string; // Chrome profile display name, parsed from the window title
   duration: number; // seconds
   timestamp: string; // ISO8601 start of the slice
 }
@@ -36,6 +37,8 @@ export interface Client {
   name: string;
   billableRate: number; // currency units per hour
   color?: string; // tremor colour name for charts
+  chromeProfileDir?: string; // Chrome --profile-directory Tally provisioned (1:1)
+  chromeProfileName?: string; // the profile's display name (what lands in titles)
 }
 
 /** Where a usage event's time is matched against. */
@@ -43,6 +46,7 @@ export interface RuleMatch {
   app?: string; // exact (case-insensitive) app/exe name
   titleRegex?: string; // regex tested against the window title
   urlDomain?: string; // matches when the event URL's host ends with this
+  profile?: string; // exact (case-insensitive) Chrome profile display name
 }
 
 /** A mapping rule: usage matching `match` rolls up to a client/project. */
