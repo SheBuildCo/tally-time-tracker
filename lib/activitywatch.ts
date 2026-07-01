@@ -201,14 +201,19 @@ const BROWSER_SUFFIX_SET = new Set(
 );
 
 /**
- * Pull the Chrome profile display name out of an OS window title.
+ * Pull the Chrome window name out of an OS window title.
  *
- * Chrome (with >1 profile) titles windows as
- * "Page Title - Profile Name - Google Chrome", so the profile is the segment
+ * Chrome's profile *display name* is never written into the window title —
+ * it only shows as an avatar/label in the profile picker. What does land in
+ * the title is Chrome's separate "Name window" feature (right-click the tab
+ * strip → Name window), which produces
+ * "Page Title - Window Name - Google Chrome", so the name is the segment
  * immediately before the trailing browser suffix. We require >=3 space-padded
- * segments AND a recognised browser as the last one, so single-profile titles
+ * segments AND a recognised browser as the last one, so unnamed windows
  * ("Page - Google Chrome") and non-Chrome browsers return undefined. Splitting
  * only on space-padded separators avoids breaking hyphenated words ("co-op").
+ * Tally has clients name the window to match their client name, so this
+ * still resolves to the profile-equivalent attribution signal in practice.
  */
 export function extractProfile(windowTitle: string | undefined): string | undefined {
   const t = (windowTitle ?? "").replace(/\s+/g, " ").trim();
@@ -254,7 +259,7 @@ export function stitchUsage(
     const title = String(e.data.title ?? "");
     const start = Date.parse(e.timestamp);
     const end = start + e.duration * 1000;
-    // The profile lives only in the OS *window* title (not the extension's
+    // The window name lives only in the OS *window* title (not the extension's
     // per-tab title), and belongs to the whole window — so extract it once here
     // and stamp it onto every event derived from this slice.
     const profile = extractProfile(title);

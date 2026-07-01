@@ -1,13 +1,18 @@
 // Chrome profile provisioning (Windows). Node-only — reached exclusively from
 // lib/handlers.ts in the main process / dev API routes, never the renderer.
 //
-// Tally runs one Chrome profile per client. Chrome writes a profile's *display
-// name* into the OS window title ("Page Title - Acme Corp - Google Chrome"),
-// which aw-watcher-window captures — that's the signal lib/activitywatch's
-// extractProfile reads back to attribute browser time to the right client. So
-// this module (a) creates/names a dedicated profile per client and (b) launches
-// Chrome into it. Naming is done by editing Chrome's `Local State` JSON while
-// Chrome is closed; see setProfileDisplayName for the fragility notes.
+// Tally runs one Chrome profile per client. The actual attribution signal is
+// Chrome's "Name window" feature (right-click the tab strip → Name window),
+// which writes into the OS window title ("Page Title - Acme Corp - Google
+// Chrome") that aw-watcher-window captures — that's what lib/activitywatch's
+// extractProfile reads back to attribute browser time to the right client.
+// Chrome does NOT write a profile's *display name* into the window title (only
+// into the profile picker avatar/label), and there is no public API/flag/file
+// to set a window name programmatically — it's a one-time manual step the user
+// performs after Tally creates and launches the profile. So this module (a)
+// creates a dedicated profile per client, (b) best-effort cosmetically names it
+// via `Local State` so Chrome's own profile picker looks right, and (c)
+// launches Chrome into it.
 
 import { spawn } from "node:child_process";
 import fs from "node:fs";
@@ -63,11 +68,17 @@ export function sanitizeProfileName(name: string): string {
 }
 
 /**
- * Set a profile's display name by editing Chrome's `Local State` JSON. Chrome
- * must be CLOSED — a running Chrome owns this file in memory and overwrites our
- * edit on exit. We mark `is_using_default_name:false` so Chrome keeps the name
- * rather than regenerating "Person N". Every access is guarded so an unexpected
- * shape degrades to "skip naming, still launch" rather than throwing.
+ * Best-effort cosmetic: set a profile's display name by editing Chrome's
+ * `Local State` JSON, so Chrome's own profile picker shows the client's name
+ * and avatar instead of "Person N". This is NOT the attribution mechanism —
+ * Chrome never writes this name into the OS window title, so it's invisible
+ * to aw-watcher-window/extractProfile. The real signal is the user naming the
+ * Chrome window (see module doc comment); this function's failure is harmless.
+ * Chrome must be CLOSED — a running Chrome owns this file in memory and
+ * overwrites our edit on exit. We mark `is_using_default_name:false` so Chrome
+ * keeps the name rather than regenerating "Person N". Every access is guarded
+ * so an unexpected shape degrades to "skip naming, still launch" rather than
+ * throwing.
  */
 export function setProfileDisplayName(profileDir: string, displayName: string): void {
   const statePath = localStatePath();
