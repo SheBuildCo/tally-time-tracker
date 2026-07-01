@@ -159,14 +159,23 @@ export function removeRule(id: number): { ok: true } {
 // ---- chrome profiles -----------------------------------------------------
 
 /**
- * Provision a dedicated Chrome profile for a client: name it (so the name lands
- * in window titles), record the mapping, auto-create a high-precedence profile
- * rule, and launch Chrome into it. Chrome interaction lives in lib/chrome.ts
- * (Node-only) and is imported lazily so non-Electron paths never load it eagerly.
+ * Provision a dedicated Chrome profile for a client: best-effort cosmetic name
+ * (so Chrome's own profile picker looks right), record the mapping,
+ * auto-create a high-precedence profile rule, and launch Chrome into it. The
+ * actual attribution signal is the Chrome window name, which Tally cannot set
+ * programmatically — `nameToUse` is returned so the caller can show/copy the
+ * exact string (matching the rule's `match.profile`) for the user to paste
+ * into Chrome's "Name window" dialog. Chrome interaction lives in
+ * lib/chrome.ts (Node-only) and is imported lazily so non-Electron paths never
+ * load it eagerly.
  */
 export async function createChromeProfile(input: {
   clientId?: unknown;
-}): Promise<{ client: Client; rule: ReturnType<typeof createRule> | null }> {
+}): Promise<{
+  client: Client;
+  rule: ReturnType<typeof createRule> | null;
+  nameToUse: string;
+}> {
   const id = Number(input.clientId);
   if (!Number.isInteger(id)) throw new ValidationError("clientId is required");
   const client = getClient(id);
@@ -199,7 +208,7 @@ export async function createChromeProfile(input: {
       });
 
   chrome.launchChromeProfile(dir);
-  return { client: saved, rule };
+  return { client: saved, rule, nameToUse: name };
 }
 
 /** Launch Chrome into a client's already-provisioned profile. */

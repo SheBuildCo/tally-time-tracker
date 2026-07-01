@@ -38,7 +38,7 @@ export interface TallyApi {
   deleteRule(id: number): Promise<{ ok: boolean }>;
   createChromeProfile(input: {
     clientId: number;
-  }): Promise<{ client: Client; rule: MappingRule | null }>;
+  }): Promise<{ client: Client; rule: MappingRule | null; nameToUse: string }>;
   launchChromeProfile(input: { clientId: number }): Promise<{ ok: boolean }>;
 }
 

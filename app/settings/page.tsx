@@ -297,6 +297,47 @@ function ApiKeyCard() {
 
 /* ---------------- Clients ---------------- */
 
+/** Copies `text` to the clipboard, swallowing failures (e.g. no clipboard permission). */
+async function copyToClipboard(text: string): Promise<boolean> {
+  try {
+    await navigator.clipboard.writeText(text);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * One-time instructions for Chrome's "Name window" step — the actual
+ * attribution signal, which Tally cannot set programmatically (see
+ * lib/chrome.ts). Shown once right after profile creation; manually
+ * dismissible since there's no signal Tally can observe to confirm it's done.
+ */
+function NameWindowInstructions({
+  name,
+  onDismiss,
+}: {
+  name: string;
+  onDismiss: () => void;
+}) {
+  return (
+    <div className="mt-2 w-full rounded-lg bg-amber-50 p-3 text-sm text-amber-800 ring-1 ring-amber-200">
+      <p>
+        Profile created and Chrome is opening. <strong>One-time step:</strong>{" "}
+        in the new window, right-click an empty spot on the tab bar →{" "}
+        <strong>Name window</strong> → paste (
+        <span className="font-mono">{name}</span> is already copied) → OK.
+      </p>
+      <button
+        onClick={onDismiss}
+        className="mt-1.5 text-xs font-medium text-amber-700 underline hover:text-amber-900"
+      >
+        Got it
+      </button>
+    </div>
+  );
+}
+
 /** Per-client Chrome profile: create one, or launch the existing one. */
 function ClientProfileControl({
   client,
@@ -307,6 +348,8 @@ function ClientProfileControl({
 }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [justCreatedName, setJustCreatedName] = useState<string | null>(null);
+  const [copied, setCopied] = useState(false);
 
   async function run(fn: () => Promise<unknown>) {
     setBusy(true);
@@ -320,12 +363,17 @@ function ClientProfileControl({
     }
   }
 
+  async function copyName(name: string) {
+    const ok = await copyToClipboard(name);
+    setCopied(ok);
+    if (ok) setTimeout(() => setCopied(false), 2000);
+  }
+
   if (client.chromeProfileDir) {
+    const name = client.chromeProfileName ?? client.name;
     return (
-      <div className="flex items-center gap-2">
-        <Pill tone="good">
-          Profile: {client.chromeProfileName ?? client.name}
-        </Pill>
+      <div className="flex flex-wrap items-center gap-2">
+        <Pill tone="good">Profile: {name}</Pill>
         <button
           disabled={busy}
           onClick={() => run(() => api().launchChromeProfile({ clientId: client.id }))}
@@ -333,17 +381,26 @@ function ClientProfileControl({
         >
           {busy ? "Opening…" : "Open"}
         </button>
+        <button
+          onClick={() => copyName(name)}
+          title="Copy the name to paste into Chrome's Name window dialog"
+          className="rounded-lg bg-white px-3 py-1.5 text-sm font-medium text-slate-600 ring-1 ring-slate-200 hover:bg-slate-50"
+        >
+          {copied ? "Copied ✓" : "Copy name"}
+        </button>
         {error && <span className="text-xs text-rose-500">{error}</span>}
       </div>
     );
   }
   return (
-    <div className="flex items-center gap-2">
+    <div className="flex w-full flex-wrap items-center gap-2">
       <button
         disabled={busy}
         onClick={() =>
           run(async () => {
-            await api().createChromeProfile({ clientId: client.id });
+            const { nameToUse } = await api().createChromeProfile({ clientId: client.id });
+            await copyToClipboard(nameToUse);
+            setJustCreatedName(nameToUse);
             onChange();
           })
         }
@@ -352,6 +409,12 @@ function ClientProfileControl({
         {busy ? "Creating…" : "Create Chrome profile"}
       </button>
       {error && <span className="text-xs text-rose-500">{error}</span>}
+      {justCreatedName && (
+        <NameWindowInstructions
+          name={justCreatedName}
+          onDismiss={() => setJustCreatedName(null)}
+        />
+      )}
     </div>
   );
 }
