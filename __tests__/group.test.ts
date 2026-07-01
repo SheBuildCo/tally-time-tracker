@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { groupActivitiesBySite } from "@/lib/group";
+import { groupActivitiesByApp, groupActivitiesBySite } from "@/lib/group";
 import type { ActivitySummary } from "@/lib/analytics";
 
 function act(over: Partial<ActivitySummary>): ActivitySummary {
@@ -57,5 +57,40 @@ describe("groupActivitiesBySite", () => {
 
   it("returns [] for no activities", () => {
     expect(groupActivitiesBySite([])).toEqual([]);
+  });
+});
+
+describe("groupActivitiesByApp", () => {
+  it("groups by app, nests site groups, sorted by hours desc", () => {
+    const apps = groupActivitiesByApp([
+      act({ label: "Tab A", app: "chrome.exe", host: "asana.com", hours: 2 }),
+      act({ label: "Tab B", app: "chrome.exe", host: "notion.so", hours: 1 }),
+      act({ label: "Inbox", app: "OUTLOOK.EXE", host: "", hours: 5 }),
+    ]);
+
+    expect(apps).toHaveLength(2);
+    // Outlook (5h) ranks above chrome.exe (3h)
+    expect(apps[0].app).toBe("OUTLOOK.EXE");
+    expect(apps[0].hours).toBe(5);
+    expect(apps[0].sites).toHaveLength(1);
+    expect(apps[0].sites[0].site).toBe("OUTLOOK.EXE");
+
+    const chrome = apps[1];
+    expect(chrome.app).toBe("chrome.exe");
+    expect(chrome.hours).toBe(3);
+    expect(chrome.sites.map((s) => s.site)).toEqual(["asana.com", "notion.so"]);
+  });
+
+  it("computes the dominant client per app the same way groupActivitiesBySite does", () => {
+    const apps = groupActivitiesByApp([
+      act({ app: "chrome.exe", host: "shared.example.com", hours: 1, topClient: "Acme", topClientId: 2 }),
+      act({ app: "chrome.exe", host: "shared.example.com", hours: 4, topClient: "Globex", topClientId: 3 }),
+    ]);
+    expect(apps[0].topClient).toBe("Globex");
+    expect(apps[0].topClientId).toBe(3);
+  });
+
+  it("returns [] for no activities", () => {
+    expect(groupActivitiesByApp([])).toEqual([]);
   });
 });

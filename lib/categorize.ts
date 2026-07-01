@@ -367,3 +367,44 @@ export function registrableDomain(host: string): string {
   if (twoPartTlds.has(lastTwo)) return parts.slice(-3).join(".");
   return lastTwo;
 }
+
+export interface DomainGroup {
+  domain: string; // registrableDomain() value, e.g. "google.com"
+  seconds: number; // summed across member suggestions
+  suggestions: RuleSuggestion[]; // seconds-desc; length 1 means no real grouping happened
+}
+
+/**
+ * Group kind:"site" suggestions by registrable domain (e.g. mail.google.com,
+ * docs.google.com, calendar.google.com -> one "google.com" group), so unassigned
+ * usage can be triaged one domain at a time instead of one subdomain at a time.
+ * Groups by `label` (always the raw host) rather than `match.urlDomain` (which
+ * may already be narrowed by LLM enrichment), so grouping is stable regardless
+ * of enrichment state. "title"/"app" kind suggestions pass through untouched in
+ * `other` — expanding a domain group still exposes each subdomain suggestion
+ * individually, since real per-client-subdomain SaaS needs to stay overridable.
+ */
+export function groupSuggestionsByDomain(
+  suggestions: RuleSuggestion[],
+): { domains: DomainGroup[]; other: RuleSuggestion[] } {
+  const sites = suggestions.filter((s) => s.kind === "site");
+  const other = suggestions.filter((s) => s.kind !== "site");
+
+  const byDomain = new Map<string, RuleSuggestion[]>();
+  for (const s of sites) {
+    const domain = registrableDomain(s.label);
+    const list = byDomain.get(domain) ?? [];
+    list.push(s);
+    byDomain.set(domain, list);
+  }
+
+  const domains: DomainGroup[] = [...byDomain.entries()]
+    .map(([domain, group]) => ({
+      domain,
+      seconds: group.reduce((sum, s) => sum + s.seconds, 0),
+      suggestions: group.sort((a, b) => b.seconds - a.seconds),
+    }))
+    .sort((a, b) => b.seconds - a.seconds);
+
+  return { domains, other };
+}

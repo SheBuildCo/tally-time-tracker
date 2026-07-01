@@ -2,13 +2,25 @@ import { describe, expect, it } from "vitest";
 import {
   categorize,
   categorizeAll,
+  groupSuggestionsByDomain,
   hostMatchesDomain,
   hostOf,
   registrableDomain,
   ruleMatches,
   suggestRules,
 } from "@/lib/categorize";
+import type { RuleSuggestion } from "@/lib/categorize";
 import { rules, usage } from "./fixtures";
+
+function suggestion(over: Partial<RuleSuggestion>): RuleSuggestion {
+  return {
+    match: { urlDomain: over.label ?? "example.com" },
+    label: "example.com",
+    seconds: 60,
+    kind: "site",
+    ...over,
+  };
+}
 
 describe("hostOf", () => {
   it("extracts the host from a full URL", () => {
@@ -230,5 +242,74 @@ describe("registrableDomain", () => {
   });
   it("keeps three labels for known two-part TLDs", () => {
     expect(registrableDomain("foo.company.co.uk")).toBe("company.co.uk");
+  });
+});
+
+describe("groupSuggestionsByDomain", () => {
+  it("groups site suggestions by registrable domain, summing seconds", () => {
+    const { domains } = groupSuggestionsByDomain([
+      suggestion({ label: "mail.google.com", seconds: 100 }),
+      suggestion({ label: "docs.google.com", seconds: 50 }),
+      suggestion({ label: "calendar.google.com", seconds: 25 }),
+    ]);
+    expect(domains).toHaveLength(1);
+    expect(domains[0].domain).toBe("google.com");
+    expect(domains[0].seconds).toBe(175);
+    expect(domains[0].suggestions).toHaveLength(3);
+    // sub-suggestions sorted by seconds desc
+    expect(domains[0].suggestions.map((s) => s.label)).toEqual([
+      "mail.google.com",
+      "docs.google.com",
+      "calendar.google.com",
+    ]);
+  });
+
+  it("keeps a lone site suggestion in its own single-member domain group", () => {
+    const { domains } = groupSuggestionsByDomain([
+      suggestion({ label: "news.ycombinator.com", seconds: 30 }),
+    ]);
+    expect(domains).toHaveLength(1);
+    expect(domains[0].domain).toBe("ycombinator.com");
+    expect(domains[0].suggestions).toHaveLength(1);
+  });
+
+  it("routes title/app kind suggestions to `other`, untouched", () => {
+    const title = suggestion({ label: "Weekly sync", kind: "title", match: { titleRegex: "Weekly sync" } });
+    const app = suggestion({ label: "slack.exe", kind: "app", match: { app: "slack.exe" } });
+    const { domains, other } = groupSuggestionsByDomain([
+      suggestion({ label: "asana.com" }),
+      title,
+      app,
+    ]);
+    expect(domains).toHaveLength(1);
+    expect(other).toEqual([title, app]);
+  });
+
+  it("sorts domain groups by total seconds descending", () => {
+    const { domains } = groupSuggestionsByDomain([
+      suggestion({ label: "asana.com", seconds: 10 }),
+      suggestion({ label: "mail.google.com", seconds: 40 }),
+      suggestion({ label: "docs.google.com", seconds: 40 }),
+    ]);
+    expect(domains[0].domain).toBe("google.com");
+    expect(domains[1].domain).toBe("asana.com");
+  });
+
+  it("groups by the raw host (label), not the possibly-narrowed match.urlDomain", () => {
+    // Simulates LLM enrichment narrowing match.urlDomain to a per-client subdomain
+    // while `label` stays the raw host — grouping must key off `label`.
+    const { domains } = groupSuggestionsByDomain([
+      suggestion({
+        label: "maasgroup.looplogics.com",
+        match: { urlDomain: "maasgroup.looplogics.com" },
+      }),
+      suggestion({
+        label: "acme.looplogics.com",
+        match: { urlDomain: "acme.looplogics.com" },
+      }),
+    ]);
+    expect(domains).toHaveLength(1);
+    expect(domains[0].domain).toBe("looplogics.com");
+    expect(domains[0].suggestions).toHaveLength(2);
   });
 });

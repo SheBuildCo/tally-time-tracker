@@ -8,7 +8,7 @@ import { useState, type ReactNode } from "react";
 import { ChevronRight } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { formatHours } from "@/lib/format";
-import type { SiteGroup as SiteGroupData } from "@/lib/group";
+import type { SiteGroup as SiteGroupData, AppGroup as AppGroupData } from "@/lib/group";
 import type { Client } from "@/lib/types";
 
 /** Pastel chart palette (Tremor colour names — used by retained Tremor charts). */
@@ -256,6 +256,39 @@ export function SiteGroup({
           </li>
         ))}
       </ul>
+    </Collapsible>
+  );
+}
+
+/**
+ * An app-first expandable group, wrapping the app's nested site groups. Only
+ * rendered when a client's activity spans 2+ apps — the caller renders
+ * SiteGroups directly (no wrapper) for the common single-app case.
+ */
+export function AppGroup({ group }: { group: AppGroupData }) {
+  return (
+    <Collapsible
+      title={
+        <span className="truncate font-medium text-slate-700">{group.app}</span>
+      }
+      meta={
+        <>
+          <span className="text-sm tabular-nums text-slate-500">
+            {formatHours(group.hours)}
+          </span>
+          {group.billableHours > 0 ? (
+            <Pill tone="good">{formatHours(group.billableHours)}</Pill>
+          ) : (
+            <Pill tone="muted">—</Pill>
+          )}
+        </>
+      }
+    >
+      <div className="space-y-2 p-2 pl-6">
+        {group.sites.map((s) => (
+          <SiteGroup key={s.site} group={s} />
+        ))}
+      </div>
     </Collapsible>
   );
 }

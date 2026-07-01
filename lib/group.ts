@@ -82,3 +82,52 @@ function dominantClient(
   }
   return { id: bestId, name: bestName };
 }
+
+export interface AppGroup {
+  app: string;
+  hours: number;
+  billableHours: number;
+  topClient: string; // dominant client name across the app's activities (by hours)
+  topClientId: number | null;
+  sites: SiteGroup[]; // this app's activities, further grouped by site
+}
+
+/**
+ * Group activities by app, each app's activities further grouped into sites via
+ * `groupActivitiesBySite`. Used to lead a client's breakdown with the app (e.g.
+ * distinguishing browser time from Teams/Outlook) when activity spans more than
+ * one app — callers should skip this tier and render `groupActivitiesBySite`
+ * directly when the result has only one group (the common single-app client).
+ */
+export function groupActivitiesByApp(activities: ActivitySummary[]): AppGroup[] {
+  const byApp = new Map<string, ActivitySummary[]>();
+  for (const a of activities) {
+    const list = byApp.get(a.app) ?? [];
+    list.push(a);
+    byApp.set(a.app, list);
+  }
+
+  return [...byApp.entries()]
+    .map(([app, items]) => {
+      const byClient = new Map<number | null, { name: string; hours: number }>();
+      let hours = 0;
+      let billableHours = 0;
+      for (const a of items) {
+        hours += a.hours;
+        billableHours += a.billableHours;
+        const entry = byClient.get(a.topClientId) ?? { name: a.topClient, hours: 0 };
+        entry.hours += a.hours;
+        byClient.set(a.topClientId, entry);
+      }
+      const dominant = dominantClient(byClient);
+      return {
+        app,
+        hours,
+        billableHours,
+        topClient: dominant.name,
+        topClientId: dominant.id,
+        sites: groupActivitiesBySite(items),
+      };
+    })
+    .sort((x, y) => y.hours - x.hours);
+}
