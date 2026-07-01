@@ -2,11 +2,12 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { useDashboard } from "@/components/DashboardContext";
-import { PageHeading, Panel, PanelTitle, Pill } from "@/components/ui";
+import { Collapsible, PageHeading, Panel, PanelTitle, Pill } from "@/components/ui";
 import { api } from "@/lib/client";
 import { formatHours, secondsToHours } from "@/lib/format";
-import type { Client, MappingRule } from "@/lib/types";
-import type { RuleSuggestion } from "@/lib/categorize";
+import type { Client, MappingRule, RuleMatch } from "@/lib/types";
+import { groupSuggestionsByDomain } from "@/lib/categorize";
+import type { DomainGroup, RuleSuggestion } from "@/lib/categorize";
 
 export default function SettingsPage() {
   const { report, refresh, days } = useDashboard();
@@ -42,7 +43,7 @@ export default function SettingsPage() {
       />
 
       <div className="space-y-4">
-        <UnassignedSuggestions
+        <UnassignedUsagePanel
           suggestions={report?.suggestions ?? []}
           clients={clients}
           days={days}
@@ -51,16 +52,25 @@ export default function SettingsPage() {
             refresh();
           }}
         />
-        <ApiKeyCard />
         <ClientsCard clients={clients} onChange={reload} />
-        <RulesCard
-          rules={rules}
-          clientName={clientName}
-          onChange={async () => {
-            await reload();
-            refresh();
-          }}
-        />
+        <Collapsible
+          title={<span className="font-medium text-slate-700">Advanced</span>}
+          meta={
+            <span className="text-xs text-slate-400">AI cleanup & mapping rules</span>
+          }
+        >
+          <div className="space-y-4 p-4">
+            <ApiKeyCard />
+            <RulesCard
+              rules={rules}
+              clientName={clientName}
+              onChange={async () => {
+                await reload();
+                refresh();
+              }}
+            />
+          </div>
+        </Collapsible>
       </div>
     </div>
   );
@@ -109,9 +119,15 @@ function CleanupButton({ days, onDone }: { days: number; onDone: () => void }) {
   );
 }
 
-/* ---------------- Unassigned suggestions ---------------- */
+/* ---------------- Unassigned usage ---------------- */
 
-function UnassignedSuggestions({
+/**
+ * Groups `kind:"site"` suggestions by registrable domain (e.g. mail.google.com
+ * + docs.google.com collapse under one "google.com" row) so triage is one click
+ * per company, not one click per subdomain. "title"/"app" kind suggestions and
+ * lone-subdomain domains fall back to a flat per-suggestion row.
+ */
+function UnassignedUsagePanel({
   suggestions,
   clients,
   days,
@@ -122,22 +138,6 @@ function UnassignedSuggestions({
   days: number;
   onCreated: () => void;
 }) {
-  const [assign, setAssign] = useState<Record<string, string>>({});
-  const [filter, setFilter] = useState("");
-
-  // Pre-fill the dropdown to the client Claude suggested (when it matches one we
-  // know), so a cleaned suggestion is one click to confirm.
-  const prefill = (s: RuleSuggestion): string => {
-    if (s.suggestedClientName) {
-      const c = clients.find(
-        (x) => x.name.toLowerCase() === s.suggestedClientName!.toLowerCase(),
-      );
-      if (c) return String(c.id);
-    }
-    return "";
-  };
-  const choiceFor = (s: RuleSuggestion) => assign[s.label] ?? prefill(s);
-
   if (suggestions.length === 0) {
     return (
       <Panel>
@@ -149,86 +149,208 @@ function UnassignedSuggestions({
     );
   }
 
-  async function createRule(s: RuleSuggestion) {
-    const choice = choiceFor(s);
+  const { domains, other } = groupSuggestionsByDomain(suggestions);
+
+  // priority 50: user-created mappings win over seeded defaults; a bulk
+  // domain-wide assign uses 55 so a more specific per-subdomain override
+  // (kept at 50) always outranks it, regardless of creation order.
+  async function assignMatch(match: RuleMatch, choice: string, priority = 50) {
     const billable = choice !== "" && choice !== "internal";
     const clientId = billable ? Number(choice) : null;
-    await api().createRule({
-      ...s.match,
-      clientId,
-      billable,
-      priority: 50, // user-created mappings win over seeded defaults
-    });
+    await api().createRule({ ...match, clientId, billable, priority });
     // Re-categorise the viewed range so past time for this site moves too.
     await api().resync(days);
     onCreated();
   }
 
-  const visible = filter.trim()
-    ? suggestions.filter((s) =>
-        `${s.cleanedLabel ?? ""} ${s.label}`
-          .toLowerCase()
-          .includes(filter.trim().toLowerCase()),
-      )
-    : suggestions;
-
   return (
     <Panel>
       <PanelTitle
         title="Unassigned usage"
-        subtitle="Assign each to a client (or mark internal). Applies across the current range."
+        subtitle="Assign a whole domain at once, or expand to override a specific subdomain."
       />
-      <input
-        value={filter}
-        onChange={(e) => setFilter(e.target.value)}
-        placeholder="Filter sites…"
-        className="mb-2 w-full rounded-lg border border-slate-200 px-3 py-1.5 text-sm text-slate-700 placeholder:text-slate-400"
-      />
-      <div className="max-h-[28rem] divide-y divide-slate-100 overflow-y-auto">
-        {visible.map((s) => (
-          <div key={s.label} className="flex flex-wrap items-center gap-3 py-2.5">
-            <div className="min-w-0 flex-1">
-              <div className="flex items-center gap-2">
-                <span className="truncate font-medium text-slate-700">
-                  {s.cleanedLabel ?? s.label}
-                </span>
-                {typeof s.confidence === "number" && (
-                  <Pill tone={s.confidence >= 0.85 ? "good" : "muted"}>
-                    {Math.round(s.confidence * 100)}% sure
-                  </Pill>
-                )}
-              </div>
-              <div className="truncate text-xs text-slate-400">
-                {s.cleanedLabel ? `${s.label} · ` : ""}
-                {describeMatch(s)} · {formatHours(secondsToHours(s.seconds))}
-              </div>
-            </div>
-            <select
-              className="rounded-lg border border-slate-200 px-2 py-1.5 text-sm text-slate-700"
-              value={choiceFor(s)}
-              onChange={(e) =>
-                setAssign((a) => ({ ...a, [s.label]: e.target.value }))
-              }
-            >
-              <option value="">Choose…</option>
-              <option value="internal">Internal / non-billable</option>
-              {clients.map((c) => (
-                <option key={c.id} value={String(c.id)}>
-                  {c.name}
-                </option>
-              ))}
-            </select>
-            <button
-              disabled={choiceFor(s) === ""}
-              onClick={() => createRule(s)}
-              className="rounded-lg bg-brand px-3 py-1.5 text-sm font-medium text-white hover:bg-brand-strong disabled:cursor-not-allowed disabled:bg-slate-300"
-            >
-              Add rule
-            </button>
-          </div>
+      <div className="space-y-2">
+        {domains.map((d) => (
+          <DomainGroupRow
+            key={d.domain}
+            group={d}
+            clients={clients}
+            onAssignDomain={(choice) => assignMatch({ urlDomain: d.domain }, choice, 55)}
+            onAssignOne={(s, choice) => assignMatch(s.match, choice)}
+          />
         ))}
+        {other.length > 0 && (
+          <Collapsible
+            title={<span className="font-medium text-slate-500">Other unassigned</span>}
+            meta={
+              <span className="text-xs text-slate-400">
+                {other.length} item{other.length === 1 ? "" : "s"}
+              </span>
+            }
+          >
+            <div className="divide-y divide-slate-100 p-2">
+              {other.map((s) => (
+                <SuggestionRow
+                  key={s.label}
+                  suggestion={s}
+                  clients={clients}
+                  onAssign={(choice) => assignMatch(s.match, choice)}
+                />
+              ))}
+            </div>
+          </Collapsible>
+        )}
       </div>
     </Panel>
+  );
+}
+
+/** One registrable-domain group: a collapsible header + optional bulk-assign row. */
+function DomainGroupRow({
+  group,
+  clients,
+  onAssignDomain,
+  onAssignOne,
+}: {
+  group: DomainGroup;
+  clients: Client[];
+  onAssignDomain: (choice: string) => Promise<void>;
+  onAssignOne: (s: RuleSuggestion, choice: string) => Promise<void>;
+}) {
+  const single = group.suggestions.length === 1;
+  return (
+    <Collapsible
+      title={<span className="truncate font-medium text-slate-700">{group.domain}</span>}
+      meta={
+        <span className="text-sm tabular-nums text-slate-500">
+          {formatHours(secondsToHours(group.seconds))}
+        </span>
+      }
+    >
+      <div className="p-2">
+        {!single && <BulkAssignRow clients={clients} onAssign={onAssignDomain} />}
+        <div className="divide-y divide-slate-100">
+          {group.suggestions.map((s) => (
+            <SuggestionRow
+              key={s.label}
+              suggestion={s}
+              clients={clients}
+              onAssign={(choice) => onAssignOne(s, choice)}
+            />
+          ))}
+        </div>
+      </div>
+    </Collapsible>
+  );
+}
+
+/** Bulk "assign this whole domain" control. */
+function BulkAssignRow({
+  clients,
+  onAssign,
+}: {
+  clients: Client[];
+  onAssign: (choice: string) => Promise<void>;
+}) {
+  const [choice, setChoice] = useState("");
+  const [busy, setBusy] = useState(false);
+  return (
+    <div className="flex flex-wrap items-center gap-2 bg-slate-50/60 px-2 py-2">
+      <span className="text-xs text-slate-400">Assign whole domain to</span>
+      <select
+        value={choice}
+        onChange={(e) => setChoice(e.target.value)}
+        disabled={busy}
+        className="rounded-lg border border-slate-200 bg-white px-2 py-1 text-sm text-slate-700"
+      >
+        <option value="">Choose…</option>
+        <option value="internal">Internal / non-billable</option>
+        {clients.map((c) => (
+          <option key={c.id} value={String(c.id)}>
+            {c.name}
+          </option>
+        ))}
+      </select>
+      <button
+        type="button"
+        disabled={busy || choice === ""}
+        onClick={async () => {
+          setBusy(true);
+          try {
+            await onAssign(choice);
+          } finally {
+            setBusy(false);
+          }
+        }}
+        className="rounded-lg bg-brand px-3 py-1 text-sm font-medium text-white hover:bg-brand-strong disabled:cursor-not-allowed disabled:bg-slate-300"
+      >
+        {busy ? "Saving…" : "Assign all"}
+      </button>
+    </div>
+  );
+}
+
+/** One suggestion row: label, confidence, match descriptor, and an assign control. */
+function SuggestionRow({
+  suggestion: s,
+  clients,
+  onAssign,
+}: {
+  suggestion: RuleSuggestion;
+  clients: Client[];
+  onAssign: (choice: string) => Promise<void>;
+}) {
+  // Pre-fill the dropdown to the client Claude suggested (when it matches one we
+  // know), so a cleaned suggestion is one click to confirm.
+  const [choice, setChoice] = useState(() => {
+    if (s.suggestedClientName) {
+      const c = clients.find(
+        (x) => x.name.toLowerCase() === s.suggestedClientName!.toLowerCase(),
+      );
+      if (c) return String(c.id);
+    }
+    return "";
+  });
+
+  return (
+    <div className="flex flex-wrap items-center gap-3 py-2.5">
+      <div className="min-w-0 flex-1">
+        <div className="flex items-center gap-2">
+          <span className="truncate font-medium text-slate-700">
+            {s.cleanedLabel ?? s.label}
+          </span>
+          {typeof s.confidence === "number" && (
+            <Pill tone={s.confidence >= 0.85 ? "good" : "muted"}>
+              {Math.round(s.confidence * 100)}% sure
+            </Pill>
+          )}
+        </div>
+        <div className="truncate text-xs text-slate-400">
+          {s.cleanedLabel ? `${s.label} · ` : ""}
+          {describeMatch(s)} · {formatHours(secondsToHours(s.seconds))}
+        </div>
+      </div>
+      <select
+        className="rounded-lg border border-slate-200 px-2 py-1.5 text-sm text-slate-700"
+        value={choice}
+        onChange={(e) => setChoice(e.target.value)}
+      >
+        <option value="">Choose…</option>
+        <option value="internal">Internal / non-billable</option>
+        {clients.map((c) => (
+          <option key={c.id} value={String(c.id)}>
+            {c.name}
+          </option>
+        ))}
+      </select>
+      <button
+        disabled={choice === ""}
+        onClick={() => onAssign(choice)}
+        className="rounded-lg bg-brand px-3 py-1.5 text-sm font-medium text-white hover:bg-brand-strong disabled:cursor-not-allowed disabled:bg-slate-300"
+      >
+        Add rule
+      </button>
+    </div>
   );
 }
 

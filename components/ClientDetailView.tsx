@@ -2,6 +2,7 @@
 
 import { BarChart } from "@tremor/react";
 import {
+  AppGroup,
   CHART,
   EmptyState,
   Panel,
@@ -10,7 +11,7 @@ import {
   StatCard,
 } from "@/components/ui";
 import { formatCurrency, formatDayLabel, formatHours } from "@/lib/format";
-import { groupActivitiesBySite } from "@/lib/group";
+import { groupActivitiesByApp, groupActivitiesBySite } from "@/lib/group";
 import type { ClientDetail } from "@/lib/analytics";
 
 /**
@@ -41,7 +42,9 @@ export default function ClientDetailView({
     "Non-billable": d.nonBillableHours,
   }));
 
-  const sites = groupActivitiesBySite(detail.activities);
+  const apps = groupActivitiesByApp(detail.activities);
+  const showAppTier = apps.length >= 2;
+  const sites = showAppTier ? [] : groupActivitiesBySite(detail.activities);
 
   return (
     <div className="space-y-4">
@@ -78,10 +81,20 @@ export default function ClientDetailView({
       <Panel>
         <PanelTitle
           title="What was worked on"
-          subtitle="Grouped by site — expand a site to see the specific tabs & chats"
+          subtitle={
+            showAppTier
+              ? "Grouped by app, then site — expand to see the specific tabs & chats"
+              : "Grouped by site — expand a site to see the specific tabs & chats"
+          }
         />
-        {sites.length === 0 ? (
+        {detail.activities.length === 0 ? (
           <EmptyState>Nothing recorded for this period.</EmptyState>
+        ) : showAppTier ? (
+          <div className="space-y-2">
+            {apps.map((g) => (
+              <AppGroup key={g.app} group={g} />
+            ))}
+          </div>
         ) : (
           <div className="space-y-2">
             {sites.map((g) => (
