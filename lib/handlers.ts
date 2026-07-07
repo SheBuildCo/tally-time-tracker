@@ -1,6 +1,5 @@
-// Transport-agnostic handlers shared by the Next.js API routes (browser dev) and
-// the Electron IPC layer (packaged app). Each returns plain JSON-serialisable
-// data so both transports behave identically.
+// Business logic backing the Next.js API routes. Each returns plain
+// JSON-serialisable data.
 
 import { isAvailable, AW_BASE_URL } from "./activitywatch";
 import {
@@ -166,8 +165,7 @@ export function removeRule(id: number): { ok: true } {
  * programmatically — `nameToUse` is returned so the caller can show/copy the
  * exact string (matching the rule's `match.profile`) for the user to paste
  * into Chrome's "Name window" dialog. Chrome interaction lives in
- * lib/chrome.ts (Node-only) and is imported lazily so non-Electron paths never
- * load it eagerly.
+ * lib/chrome.ts (Node-only) and is imported lazily so it's never loaded eagerly.
  */
 export async function createChromeProfile(input: {
   clientId?: unknown;

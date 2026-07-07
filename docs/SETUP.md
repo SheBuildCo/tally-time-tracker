@@ -91,12 +91,11 @@ match a keyword in the title (e.g. the client's name).
 
 ## 4. Run Tally
 
-**End users (recommended):** install the **Tally** desktop app (the
-`Tally-Setup-*.exe` installer). On first launch it checks for ActivityWatch and, if
-it isn't running, offers to take you to the download page. Once AW is running, your
-activity appears automatically; otherwise Tally still shows your saved history.
+**End users:** Tally auto-starts at login and runs quietly in the background —
+see [`docs/DEPLOYMENT.md`](DEPLOYMENT.md) for one-time setup on a new machine.
+Once it's set up, just open your bookmark to `http://localhost:3000`.
 
-**Developers:** run it in the browser instead —
+**Developers:** run it locally instead —
 ```bash
 npm install
 npm run dev    # http://localhost:3000
@@ -163,14 +162,9 @@ a strict firewall.
 | Changed rules in bulk, old time still wrong | Click **Re-sync with current rules** in Settings (assigning a single site already re-syncs on its own). |
 | AW on a non-default port             | Set `AW_BASE_URL` before starting Tally.                             |
 
-## Building the installer (for whoever distributes Tally)
+## Setting up a new employee machine
 
-On a **Windows** machine:
-
-```bash
-npm install
-npm run dist     # produces dist/Tally-Setup-<version>.exe
-```
-
-Share that `.exe` with the team. Each teammate also needs ActivityWatch installed
-(step 1) — Tally will prompt them if it's missing.
+See [`docs/DEPLOYMENT.md`](DEPLOYMENT.md) — run `scripts/setup-autostart.ps1`
+once to clone the repo and register the auto-start task. Each teammate also
+needs ActivityWatch installed (step 1) — Tally will show a banner if it's
+missing.

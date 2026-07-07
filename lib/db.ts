@@ -13,7 +13,7 @@ import path from "node:path";
 import type { Client, MappingRule, RuleMatch } from "./types";
 
 // Resolve the DB path lazily (at first connect, not module load) so that env
-// vars set by the Electron main process or by tests take effect regardless of
+// vars set by the launching script or by tests take effect regardless of
 // ES-module import hoisting.
 function dbPath(): string {
   const dataDir =

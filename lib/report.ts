@@ -1,7 +1,7 @@
 // Orchestration: assemble the dashboard's data from the persisted rollup
 // (history) plus a live recompute of the current day, then aggregate it. This is
-// the single entry point the API routes / Electron IPC handlers call, so all the
-// ingest + categorize + analytics wiring lives in one place.
+// the single entry point the API routes call, so all the ingest + categorize +
+// analytics wiring lives in one place.
 
 import {
   suggestRules,

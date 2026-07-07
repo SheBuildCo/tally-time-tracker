@@ -1,7 +1,6 @@
-// Browser-side data client. Runs in the React UI and talks to either:
-//   - Electron's main process via the `window.tally` IPC bridge (packaged app), or
-//   - the Next.js REST API via fetch (browser dev).
-// This is the ONLY transport seam, so pages never branch on environment.
+// Browser-side data client. Runs in the React UI and talks to the Next.js REST
+// API via fetch. This is the ONLY transport seam, so pages never branch on
+// environment.
 
 import type { Report, ClientReport, DailyReport } from "./report";
 import type { CleanupResult } from "./cleanup";
@@ -93,7 +92,7 @@ const restApi: TallyApi = {
     http(`/api/chrome/launch`, { method: "POST", body: JSON.stringify(input) }),
 };
 
-/** Pick the IPC bridge when running inside Electron, else the REST client. */
+/** The REST client (the only transport now that the Electron IPC bridge is gone). */
 export function api(): TallyApi {
   if (typeof window !== "undefined" && window.tally) return window.tally;
   return restApi;
