@@ -8,6 +8,8 @@ import { Sessions } from './pages/Sessions'
 import { SessionDetail } from './pages/SessionDetail'
 import { Clients } from './pages/Clients'
 import { Settings } from './pages/Settings'
+import { Reports } from './pages/Reports'
+import { ReportTemplate } from './pages/ReportTemplate'
 
 function App(): React.JSX.Element {
   const init = useStore((s) => s.init)
@@ -29,6 +31,8 @@ function App(): React.JSX.Element {
             <Route path="/sessions" element={<Sessions />} />
             <Route path="/sessions/:id" element={<SessionDetail />} />
             <Route path="/clients" element={<Clients />} />
+            <Route path="/reports" element={<Reports />} />
+            <Route path="/reports/template" element={<ReportTemplate />} />
             <Route path="/settings" element={<Settings />} />
           </Routes>
         </main>

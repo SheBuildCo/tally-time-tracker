@@ -123,6 +123,16 @@ export const DEFAULT_SHORTCUTS = {
   picker: 'CommandOrControl+Shift+P'
 } as const
 
+export interface ReportHistoryEntry {
+  id: number
+  clientId: number
+  startDate: string // YYYY-MM-DD
+  endDate: string // YYYY-MM-DD
+  pdfPath: string
+  csvPath: string
+  createdAt: string
+}
+
 export interface Settings {
   shortcutToggle: string
   shortcutPicker: string
