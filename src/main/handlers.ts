@@ -3,12 +3,13 @@
 // them in one map makes the preload and the typed renderer API trivial to keep
 // in sync.
 
-import { ipcMain } from 'electron'
+import { ipcMain, shell } from 'electron'
 import * as db from './db'
 import * as timer from './timer'
 import { getRangeRows, getSessionActivities, invalidateSession } from './ingest'
 import { buildRangeSummary } from './analytics'
 import { isAvailable } from './activitywatch'
+import { generateReport } from './reports'
 import type { Client, MappingRule, Settings } from '../shared/types'
 
 // Side-effecting capabilities the handlers need but that live in main/index or
@@ -90,6 +91,14 @@ export function registerHandlers(ctx: HandlerContext): void {
     },
     'settings:clearActivityData': () => db.clearActivityData(),
 
+    // Reports
+    'reports:generate': (clientId: number, startDay: string, endDay: string) =>
+      generateReport(clientId, startDay, endDay),
+    'reports:history': (clientId?: number) => db.listReportHistory(clientId),
+    'reports:openFile': (path: string) => shell.openPath(path),
+    'reports:getTemplate': () => db.getSetting('report_template_html'),
+    'reports:saveTemplate': (html: string) => db.setSetting('report_template_html', html),
+
     // ActivityWatch
     'aw:health': () => isAvailable()
   }
@@ -123,5 +132,10 @@ export const CHANNELS = [
   'settings:updateShortcuts',
   'settings:setAutoLaunch',
   'settings:clearActivityData',
-  'aw:health'
+  'aw:health',
+  'reports:generate',
+  'reports:history',
+  'reports:openFile',
+  'reports:getTemplate',
+  'reports:saveTemplate'
 ] as const

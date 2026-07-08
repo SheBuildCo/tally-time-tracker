@@ -12,7 +12,8 @@ import type {
   RuleMatch,
   DailyActivityRow,
   TimerSession,
-  SessionExclusion
+  SessionExclusion,
+  ReportHistoryEntry
 } from '../shared/types'
 import { DEFAULT_SHORTCUTS } from '../shared/types'
 
@@ -21,7 +22,10 @@ let db: Database.Database
 // Resolve the DB path. In dev/tests we allow an override via TALLY_DATA_DIR so
 // we never touch the user's real data. In the packaged app it lives under the
 // per-user app data dir (e.g. %APPDATA%/Tally).
-function resolveDataDir(): string {
+// Exported so other main-process modules (e.g. reports.ts, writing files
+// alongside the DB) resolve to the same directory instead of calling
+// app.getPath('userData') directly and silently ignoring the override.
+export function resolveDataDir(): string {
   if (process.env.TALLY_DATA_DIR) return process.env.TALLY_DATA_DIR
   // app may be undefined in a pure-node test context; fall back to cwd.
   try {
@@ -121,9 +125,22 @@ function migrate(): void {
       seconds    INTEGER NOT NULL DEFAULT 0
     );
 
+    -- A log of client work-summary reports generated on disk, so past PDFs/CSVs
+    -- can be reopened without regenerating them.
+    CREATE TABLE IF NOT EXISTS report_history (
+      id          INTEGER PRIMARY KEY AUTOINCREMENT,
+      client_id   INTEGER NOT NULL REFERENCES clients(id) ON DELETE CASCADE,
+      start_date  TEXT NOT NULL,
+      end_date    TEXT NOT NULL,
+      pdf_path    TEXT NOT NULL,
+      csv_path    TEXT NOT NULL,
+      created_at  TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+
     CREATE INDEX IF NOT EXISTS idx_sessions_start ON timer_sessions(start_time);
     CREATE INDEX IF NOT EXISTS idx_exclusions_session ON session_exclusions(session_id);
     CREATE INDEX IF NOT EXISTS idx_snapshot_session ON session_activity_snapshot(session_id);
+    CREATE INDEX IF NOT EXISTS idx_report_history_client ON report_history(client_id);
   `)
 
   // First run (or upgrading from a DB that predates this setting): anchor
@@ -132,7 +149,22 @@ function migrate(): void {
   if (!getSetting('tracking_started_at')) {
     setSetting('tracking_started_at', new Date().toISOString())
   }
+
+  // Seed a starter report template so the Reports page isn't empty on first
+  // use. This is the exact HTML shape TipTap's mergeField/mergeFieldBlock
+  // nodes emit, so it round-trips cleanly when loaded into the editor.
+  if (!getSetting('report_template_html')) {
+    setSetting('report_template_html', DEFAULT_REPORT_TEMPLATE_HTML)
+  }
 }
+
+const DEFAULT_REPORT_TEMPLATE_HTML = `
+<h2>Work Summary</h2>
+<p><span data-merge-field="client_name" contenteditable="false">[Client Name]</span> — <span data-merge-field="date_range" contenteditable="false">[Date Range]</span></p>
+<p>Please find a summary of work completed below.</p>
+<div data-merge-field="sessions_table" contenteditable="false">[Sessions Table]</div>
+<p>Generated <span data-merge-field="generated_date" contenteditable="false">[Generated Date]</span></p>
+`.trim()
 
 function seedIfEmpty(): void {
   const count = db.prepare('SELECT COUNT(*) AS n FROM clients').get() as { n: number }
@@ -385,6 +417,28 @@ export function getSessionsInRange(startISO: string, endISO: string): TimerSessi
   return rows.map(rowToSession)
 }
 
+// Completed sessions for one client overlapping [startISO, endISO], oldest
+// first. This — not daily_activity — is the source of truth for client
+// reports: only time the user explicitly tracked for this client via the
+// manual timer, never passively-categorized activity.
+export function getSessionsForClientInRange(
+  clientId: number,
+  startISO: string,
+  endISO: string
+): TimerSession[] {
+  const rows = db
+    .prepare(
+      `SELECT * FROM timer_sessions
+       WHERE client_id = ?
+         AND end_time IS NOT NULL
+         AND start_time <= ?
+         AND end_time >= ?
+       ORDER BY start_time ASC`
+    )
+    .all(clientId, endISO, startISO) as any[]
+  return rows.map(rowToSession)
+}
+
 export function getRunningSession(): TimerSession | null {
   const r = db
     .prepare('SELECT * FROM timer_sessions WHERE end_time IS NULL ORDER BY start_time DESC LIMIT 1')
@@ -465,4 +519,52 @@ export function clearActivityData(): void {
   })
   tx()
   setSetting('tracking_started_at', new Date().toISOString())
+}
+
+// ---- Report history ----
+
+function rowToReportHistoryEntry(r: any): ReportHistoryEntry {
+  return {
+    id: r.id,
+    clientId: r.client_id,
+    startDate: r.start_date,
+    endDate: r.end_date,
+    pdfPath: r.pdf_path,
+    csvPath: r.csv_path,
+    createdAt: r.created_at
+  }
+}
+
+export function createReportHistoryEntry(input: {
+  clientId: number
+  startDate: string
+  endDate: string
+  pdfPath: string
+  csvPath: string
+}): ReportHistoryEntry {
+  const info = db
+    .prepare(
+      `INSERT INTO report_history (client_id, start_date, end_date, pdf_path, csv_path)
+       VALUES (?, ?, ?, ?, ?)`
+    )
+    .run(input.clientId, input.startDate, input.endDate, input.pdfPath, input.csvPath)
+  return getReportHistoryEntry(info.lastInsertRowid as number)!
+}
+
+export function getReportHistoryEntry(id: number): ReportHistoryEntry | null {
+  const r = db.prepare('SELECT * FROM report_history WHERE id = ?').get(id) as any
+  return r ? rowToReportHistoryEntry(r) : null
+}
+
+export function listReportHistory(clientId?: number, limit = 100): ReportHistoryEntry[] {
+  const rows = clientId
+    ? (db
+        .prepare(
+          'SELECT * FROM report_history WHERE client_id = ? ORDER BY created_at DESC LIMIT ?'
+        )
+        .all(clientId, limit) as any[])
+    : (db
+        .prepare('SELECT * FROM report_history ORDER BY created_at DESC LIMIT ?')
+        .all(limit) as any[])
+  return rows.map(rowToReportHistoryEntry)
 }

@@ -9,7 +9,8 @@ import type {
   SessionActivity,
   SessionExclusion,
   RangeSummary,
-  Settings
+  Settings,
+  ReportHistoryEntry
 } from '@shared/types'
 
 const invoke = <T>(channel: string, ...args: unknown[]): Promise<T> =>
@@ -53,6 +54,14 @@ export const api = {
     invoke<void>('settings:updateShortcuts', toggle, picker),
   setAutoLaunch: (enabled: boolean) => invoke<void>('settings:setAutoLaunch', enabled),
   clearActivityData: () => invoke<void>('settings:clearActivityData'),
+
+  // Reports
+  generateReport: (clientId: number, startDay: string, endDay: string) =>
+    invoke<ReportHistoryEntry>('reports:generate', clientId, startDay, endDay),
+  listReportHistory: (clientId?: number) => invoke<ReportHistoryEntry[]>('reports:history', clientId),
+  openReportFile: (path: string) => invoke<string>('reports:openFile', path),
+  getReportTemplate: () => invoke<string>('reports:getTemplate'),
+  saveReportTemplate: (html: string) => invoke<void>('reports:saveTemplate', html),
 
   // ActivityWatch
   awHealth: () => invoke<boolean>('aw:health'),
