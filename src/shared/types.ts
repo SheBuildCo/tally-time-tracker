@@ -127,5 +127,6 @@ export interface Settings {
   shortcutToggle: string
   shortcutPicker: string
   autoLaunch: boolean
+  trackingStartedAt: string // ISO-8601 UTC; AW history before this is never ingested
   awStatus: boolean
 }

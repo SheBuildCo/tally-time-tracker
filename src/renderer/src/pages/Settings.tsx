@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import type { Settings as SettingsModel } from '@shared/types'
 import { api } from '../api'
+import { formatDate } from '../format'
 
 // Convert a keydown event into an Electron accelerator string.
 function toAccelerator(e: React.KeyboardEvent): string | null {
@@ -55,10 +56,24 @@ function ShortcutInput({
 
 export function Settings(): React.JSX.Element {
   const [settings, setSettings] = useState<SettingsModel | null>(null)
+  const [confirmingClear, setConfirmingClear] = useState(false)
+  const [clearing, setClearing] = useState(false)
 
   useEffect(() => {
     api.getSettings().then(setSettings)
   }, [])
+
+  async function clearActivityData(): Promise<void> {
+    setClearing(true)
+    try {
+      await api.clearActivityData()
+      const fresh = await api.getSettings()
+      setSettings(fresh)
+    } finally {
+      setClearing(false)
+      setConfirmingClear(false)
+    }
+  }
 
   async function saveShortcuts(toggle: string, picker: string): Promise<void> {
     await api.updateShortcuts(toggle, picker)
@@ -138,6 +153,43 @@ export function Settings(): React.JSX.Element {
             </span>
           )}
         </div>
+        <div className="mt-2 text-xs text-slate-500">
+          Tracking activity since {formatDate(settings.trackingStartedAt)}
+        </div>
+      </section>
+
+      <section className="rounded-lg border border-red-200 bg-red-50 p-4">
+        <h2 className="mb-1 font-medium text-red-900">Danger zone</h2>
+        <p className="mb-3 text-sm text-red-700">
+          Clears all tracked hours and re-anchors tracking to right now, so
+          ActivityWatch history from before this moment is never pulled in again.
+          Your clients, rules, and recorded sessions are not affected.
+        </p>
+        {confirmingClear ? (
+          <div className="flex items-center gap-2">
+            <button
+              onClick={clearActivityData}
+              disabled={clearing}
+              className="rounded-md bg-red-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-red-700 disabled:opacity-50"
+            >
+              {clearing ? 'Clearing…' : 'Yes, clear all activity data'}
+            </button>
+            <button
+              onClick={() => setConfirmingClear(false)}
+              disabled={clearing}
+              className="rounded-md px-3 py-1.5 text-sm font-medium text-red-700 hover:bg-red-100"
+            >
+              Cancel
+            </button>
+          </div>
+        ) : (
+          <button
+            onClick={() => setConfirmingClear(true)}
+            className="rounded-md border border-red-300 bg-white px-3 py-1.5 text-sm font-medium text-red-700 hover:bg-red-100"
+          >
+            Clear activity data
+          </button>
+        )}
       </section>
     </div>
   )

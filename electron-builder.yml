@@ -1,5 +1,5 @@
-appId: com.electron.app
-productName: tally-scaffold
+appId: com.shebuild.tally
+productName: Tally
 directories:
   buildResources: build
 files:
@@ -12,7 +12,7 @@ files:
 asarUnpack:
   - resources/**
 win:
-  executableName: tally-scaffold
+  executableName: Tally
 nsis:
   artifactName: ${name}-${version}-setup.${ext}
   shortcutName: ${productName}
@@ -38,6 +38,3 @@ linux:
 appImage:
   artifactName: ${name}-${version}.${ext}
 npmRebuild: false
-publish:
-  provider: generic
-  url: https://example.com/auto-updates

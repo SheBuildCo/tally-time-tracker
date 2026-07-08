@@ -17,14 +17,25 @@ export function todayUTC(): string {
   return new Date().toISOString().slice(0, 10)
 }
 
-// Last N calendar days (UTC), oldest first, including today.
+// The earliest day we're allowed to ingest from ActivityWatch. Anything AW
+// logged before the user started using Tally (or before their last "clear
+// data" reset) is never pulled in, no matter how wide a range is requested.
+function trackingStartDay(): string {
+  const iso = db.getSetting('tracking_started_at')
+  return (iso ?? new Date().toISOString()).slice(0, 10)
+}
+
+// Last N calendar days (UTC), oldest first, including today, clamped to the
+// tracking-start floor.
 export function dayStrings(days: number): string[] {
+  const startFloor = trackingStartDay()
   const out: string[] = []
   const now = new Date()
   for (let i = days - 1; i >= 0; i--) {
     const d = new Date(now)
     d.setUTCDate(d.getUTCDate() - i)
-    out.push(d.toISOString().slice(0, 10))
+    const day = d.toISOString().slice(0, 10)
+    if (day >= startFloor) out.push(day)
   }
   return out
 }
@@ -61,6 +72,7 @@ async function computeDay(day: string): Promise<DailyActivityRow[]> {
 
 // Get rolled-up rows for a range of days. Finalized past days come straight
 // from the cache; today (and any not-yet-finalized past day) is recomputed.
+// Days before the tracking-start floor are never included.
 export async function getRangeRows(days: number): Promise<DailyActivityRow[]> {
   const wanted = dayStrings(days)
   const today = todayUTC()
@@ -98,39 +110,69 @@ export function invalidateSession(session: TimerSession): void {
   }
 }
 
-// Activities that fell inside a session's window, grouped and annotated with
-// whether the user has excluded each one. Read live from AW so the detail view
-// reflects the true window even for days that were finalized under old rules.
-export async function getSessionActivities(sessionId: number): Promise<SessionActivity[]> {
-  const session = db.getSession(sessionId)
-  if (!session) return []
-  const start = session.startTime
-  const end = session.endTime ?? new Date().toISOString()
-
+// Live-query AW for [start, end) and group into per-(app, activity, host)
+// totals. Shared by the live "still running" preview, the one-time snapshot
+// capture at stop time, and the backfill fallback for older sessions.
+async function fetchAndGroupActivities(
+  start: string,
+  end: string
+): Promise<{ app: string; host: string; activity: string; seconds: number }[]> {
   const events = await fetchEvents(start, end)
-  const exclusions = db.listExclusions(sessionId)
-
-  const map = new Map<string, SessionActivity>()
+  const map = new Map<string, { app: string; host: string; activity: string; seconds: number }>()
   for (const e of events) {
     const activity = activityLabel(e)
     const key = `${e.app}|${activity}|${e.host}`
-    const ex = exclusions.find(
-      (x) => x.app === e.app && x.host === e.host && x.activity === activity
-    )
     const existing = map.get(key)
     if (existing) {
       existing.seconds += e.duration
     } else {
-      map.set(key, {
-        app: e.app,
-        host: e.host,
-        activity,
-        seconds: e.duration,
-        excluded: !!ex,
-        exclusionId: ex?.id ?? null
-      })
+      map.set(key, { app: e.app, host: e.host, activity, seconds: e.duration })
     }
   }
-
   return Array.from(map.values()).sort((a, b) => b.seconds - a.seconds)
+}
+
+function annotateWithExclusions(
+  rows: { app: string; host: string; activity: string; seconds: number }[],
+  exclusions: SessionExclusion[]
+): SessionActivity[] {
+  return rows.map((r) => {
+    const ex = exclusions.find((x) => x.app === r.app && x.host === r.host && x.activity === r.activity)
+    return { ...r, excluded: !!ex, exclusionId: ex?.id ?? null }
+  })
+}
+
+// Captures the permanent, immutable record of what a session contained. Called
+// once when the timer stops. If it fails (AW offline, transient error), the
+// session simply has no snapshot yet and getSessionActivities() will fall back
+// to a live query and backfill it opportunistically on next read.
+export async function captureSessionSnapshot(session: TimerSession): Promise<void> {
+  if (!session.endTime) return
+  const rows = await fetchAndGroupActivities(session.startTime, session.endTime)
+  if (rows.length > 0) db.saveSessionSnapshot(session.id, rows)
+}
+
+// Activities that fell inside a session's window, annotated with whether the
+// user has excluded each one. Completed sessions read from the immutable
+// snapshot captured at stop time; a still-running session gets a live preview.
+export async function getSessionActivities(sessionId: number): Promise<SessionActivity[]> {
+  const session = db.getSession(sessionId)
+  if (!session) return []
+  const exclusions = db.listExclusions(sessionId)
+
+  if (session.endTime) {
+    const snapshot = db.getSessionSnapshot(sessionId)
+    if (snapshot.length > 0) {
+      return annotateWithExclusions(snapshot, exclusions)
+    }
+    // No snapshot yet (older session from before this existed, or capture
+    // failed) — query live once and backfill so future reads are stable.
+    const rows = await fetchAndGroupActivities(session.startTime, session.endTime)
+    if (rows.length > 0) db.saveSessionSnapshot(sessionId, rows)
+    return annotateWithExclusions(rows, exclusions)
+  }
+
+  // Still running: live preview, recomputed every time.
+  const rows = await fetchAndGroupActivities(session.startTime, new Date().toISOString())
+  return annotateWithExclusions(rows, exclusions)
 }
