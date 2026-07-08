@@ -52,6 +52,7 @@ export const api = {
   updateShortcuts: (toggle: string, picker: string) =>
     invoke<void>('settings:updateShortcuts', toggle, picker),
   setAutoLaunch: (enabled: boolean) => invoke<void>('settings:setAutoLaunch', enabled),
+  clearActivityData: () => invoke<void>('settings:clearActivityData'),
 
   // ActivityWatch
   awHealth: () => invoke<boolean>('aw:health'),

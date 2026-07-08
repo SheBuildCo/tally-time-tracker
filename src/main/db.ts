@@ -108,9 +108,30 @@ function migrate(): void {
       activity   TEXT NOT NULL
     );
 
+    -- Immutable record of what a session actually contained, captured once when
+    -- the timer stops. This is the client-facing proof of work: it must not
+    -- drift if ActivityWatch's live data changes shape after the fact (browser
+    -- extension buffering, bucket rotation, etc).
+    CREATE TABLE IF NOT EXISTS session_activity_snapshot (
+      id         INTEGER PRIMARY KEY AUTOINCREMENT,
+      session_id INTEGER NOT NULL REFERENCES timer_sessions(id) ON DELETE CASCADE,
+      app        TEXT NOT NULL,
+      host       TEXT NOT NULL,
+      activity   TEXT NOT NULL,
+      seconds    INTEGER NOT NULL DEFAULT 0
+    );
+
     CREATE INDEX IF NOT EXISTS idx_sessions_start ON timer_sessions(start_time);
     CREATE INDEX IF NOT EXISTS idx_exclusions_session ON session_exclusions(session_id);
+    CREATE INDEX IF NOT EXISTS idx_snapshot_session ON session_activity_snapshot(session_id);
   `)
+
+  // First run (or upgrading from a DB that predates this setting): anchor
+  // ingestion to "now" so we never retroactively pull in AW history that
+  // predates the user actually starting to use Tally.
+  if (!getSetting('tracking_started_at')) {
+    setSetting('tracking_started_at', new Date().toISOString())
+  }
 }
 
 function seedIfEmpty(): void {
@@ -401,4 +422,47 @@ export function addExclusion(
 
 export function removeExclusion(id: number): void {
   db.prepare('DELETE FROM session_exclusions WHERE id = ?').run(id)
+}
+
+// ---- Session activity snapshots (immutable, captured at stop time) ----
+
+export interface SnapshotRow {
+  app: string
+  host: string
+  activity: string
+  seconds: number
+}
+
+export function saveSessionSnapshot(sessionId: number, rows: SnapshotRow[]): void {
+  const tx = db.transaction(() => {
+    db.prepare('DELETE FROM session_activity_snapshot WHERE session_id = ?').run(sessionId)
+    const insert = db.prepare(
+      `INSERT INTO session_activity_snapshot (session_id, app, host, activity, seconds)
+       VALUES (?, ?, ?, ?, ?)`
+    )
+    for (const row of rows) {
+      insert.run(sessionId, row.app, row.host, row.activity, Math.round(row.seconds))
+    }
+  })
+  tx()
+}
+
+export function getSessionSnapshot(sessionId: number): SnapshotRow[] {
+  return db
+    .prepare('SELECT app, host, activity, seconds FROM session_activity_snapshot WHERE session_id = ?')
+    .all(sessionId) as SnapshotRow[]
+}
+
+// ---- Data reset ----
+
+// Wipes the rollup cache only (daily_activity / day_finalized) and moves the
+// tracking-start anchor to now, so no pre-reset ActivityWatch history is ever
+// pulled in again. Clients, rules, and recorded timer sessions are untouched.
+export function clearActivityData(): void {
+  const tx = db.transaction(() => {
+    db.prepare('DELETE FROM daily_activity').run()
+    db.prepare('DELETE FROM day_finalized').run()
+  })
+  tx()
+  setSetting('tracking_started_at', new Date().toISOString())
 }

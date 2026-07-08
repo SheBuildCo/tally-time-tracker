@@ -113,8 +113,11 @@ export async function fetchEvents(startISO: string, endISO: string): Promise<Usa
     try {
       const evts = await runQuery(timeperiod, q)
       browserEvents.push(...evts)
-    } catch {
-      // A malformed/empty web bucket shouldn't kill the whole ingest.
+    } catch (err) {
+      // A single bad bucket shouldn't kill the whole ingest, but a silently
+      // dropped browser query is exactly what would make tab-level detail
+      // disappear from a session — log it so it's diagnosable.
+      console.error('[tally] AW web bucket query failed', webBucket, err)
     }
   }
 

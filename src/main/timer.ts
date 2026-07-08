@@ -6,7 +6,7 @@
 import { BrowserWindow } from 'electron'
 import type { TimerState, TimerSession } from '../shared/types'
 import * as db from './db'
-import { invalidateSession } from './ingest'
+import { invalidateSession, captureSessionSnapshot } from './ingest'
 
 let state: TimerState = { status: 'idle' }
 const listeners = new Set<(state: TimerState) => void>()
@@ -61,7 +61,16 @@ export function stopTimer(): TimerSession | null {
   if (state.status !== 'running') return null
   const session = db.endSession(state.sessionId, new Date().toISOString())
   state = { status: 'idle' }
-  if (session) invalidateSession(session)
+  if (session) {
+    invalidateSession(session)
+    // Freeze the session's activity breakdown now, while it's fresh. Reading
+    // it live on every future view would let ActivityWatch's own buffering
+    // drift the numbers out from under a record the user needs as proof of
+    // work — capture it once here instead.
+    captureSessionSnapshot(session).catch((err) => {
+      console.error('[tally] failed to capture session snapshot', session.id, err)
+    })
+  }
   broadcast()
   return session
 }

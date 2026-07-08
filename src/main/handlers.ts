@@ -25,6 +25,7 @@ function readSettings(): Settings {
     shortcutToggle: db.getSetting('shortcut_toggle') ?? 'CommandOrControl+Shift+T',
     shortcutPicker: db.getSetting('shortcut_picker') ?? 'CommandOrControl+Shift+P',
     autoLaunch: db.getSetting('auto_launch') === 'true',
+    trackingStartedAt: db.getSetting('tracking_started_at') ?? new Date().toISOString(),
     awStatus: false // filled in live by settings:get
   }
 }
@@ -87,6 +88,7 @@ export function registerHandlers(ctx: HandlerContext): void {
       db.setSetting('auto_launch', enabled ? 'true' : 'false')
       ctx.setAutoLaunch(enabled)
     },
+    'settings:clearActivityData': () => db.clearActivityData(),
 
     // ActivityWatch
     'aw:health': () => isAvailable()
@@ -120,5 +122,6 @@ export const CHANNELS = [
   'settings:get',
   'settings:updateShortcuts',
   'settings:setAutoLaunch',
+  'settings:clearActivityData',
   'aw:health'
 ] as const
