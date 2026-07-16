@@ -4,19 +4,35 @@
 
 import type { Report, ClientReport, DailyReport } from "./report";
 import type { CleanupResult } from "./cleanup";
-import type { Client, MappingRule } from "./types";
+import type { Client, MappingRule, Person } from "./types";
+
+/** `?personId=` query suffix, or "" for the whole-team view. */
+function personParam(personId?: number): string {
+  return personId === undefined ? "" : `&personId=${personId}`;
+}
 
 export interface HealthResult {
   available: boolean;
   awBaseUrl: string;
 }
 
-/** The surface both transports implement. */
+/** The surface the REST client implements. `personId` omitted = whole team. */
 export interface TallyApi {
-  getAnalytics(days: number): Promise<Report>;
-  getClientReport(clientId: number, days: number): Promise<ClientReport>;
-  getClientDay(clientId: number, date: string): Promise<ClientReport>;
-  getDaily(days: number): Promise<DailyReport>;
+  getAnalytics(days: number, personId?: number): Promise<Report>;
+  getClientReport(
+    clientId: number,
+    days: number,
+    personId?: number,
+  ): Promise<ClientReport>;
+  getClientDay(
+    clientId: number,
+    date: string,
+    personId?: number,
+  ): Promise<ClientReport>;
+  getDaily(days: number, personId?: number): Promise<DailyReport>;
+  listPeople(): Promise<{ people: Person[] }>;
+  createPerson(input: { name: string }): Promise<{ person: Person; token: string }>;
+  deletePerson(id: number): Promise<{ ok: boolean }>;
   health(): Promise<HealthResult>;
   resync(days: number): Promise<{ ok: boolean; trackerAvailable: boolean }>;
   cleanup(days: number, opts?: { force?: boolean }): Promise<CleanupResult>;
@@ -41,12 +57,6 @@ export interface TallyApi {
   launchChromeProfile(input: { clientId: number }): Promise<{ ok: boolean }>;
 }
 
-declare global {
-  interface Window {
-    tally?: TallyApi;
-  }
-}
-
 async function http<T>(url: string, init?: RequestInit): Promise<T> {
   const res = await fetch(url, {
     ...init,
@@ -59,12 +69,20 @@ async function http<T>(url: string, init?: RequestInit): Promise<T> {
   return data as T;
 }
 
-/** REST implementation used in the browser during `next dev` / static preview. */
+/** REST implementation — talks to the central server's /api routes. */
 const restApi: TallyApi = {
-  getAnalytics: (days) => http(`/api/analytics?days=${days}`),
-  getClientReport: (id, days) => http(`/api/clients/${id}/analytics?days=${days}`),
-  getClientDay: (id, date) => http(`/api/clients/${id}/day?date=${date}`),
-  getDaily: (days) => http(`/api/daily?days=${days}`),
+  getAnalytics: (days, personId) =>
+    http(`/api/analytics?days=${days}${personParam(personId)}`),
+  getClientReport: (id, days, personId) =>
+    http(`/api/clients/${id}/analytics?days=${days}${personParam(personId)}`),
+  getClientDay: (id, date, personId) =>
+    http(`/api/clients/${id}/day?date=${date}${personParam(personId)}`),
+  getDaily: (days, personId) =>
+    http(`/api/daily?days=${days}${personParam(personId)}`),
+  listPeople: () => http(`/api/people`),
+  createPerson: (input) =>
+    http(`/api/people`, { method: "POST", body: JSON.stringify(input) }),
+  deletePerson: (id) => http(`/api/people/${id}`, { method: "DELETE" }),
   health: () => http(`/api/health`),
   resync: (days) => http(`/api/resync?days=${days}`, { method: "POST" }),
   cleanup: (days, opts) =>
@@ -94,6 +112,5 @@ const restApi: TallyApi = {
 
 /** The REST client (the only transport now that the Electron IPC bridge is gone). */
 export function api(): TallyApi {
-  if (typeof window !== "undefined" && window.tally) return window.tally;
   return restApi;
 }

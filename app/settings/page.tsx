@@ -5,7 +5,7 @@ import { useDashboard } from "@/components/DashboardContext";
 import { Collapsible, PageHeading, Panel, PanelTitle, Pill } from "@/components/ui";
 import { api } from "@/lib/client";
 import { formatHours, secondsToHours } from "@/lib/format";
-import type { Client, MappingRule, RuleMatch } from "@/lib/types";
+import type { Client, MappingRule, Person, RuleMatch } from "@/lib/types";
 import { groupSuggestionsByDomain } from "@/lib/categorize";
 import type { DomainGroup, RuleSuggestion } from "@/lib/categorize";
 
@@ -53,6 +53,7 @@ export default function SettingsPage() {
           }}
         />
         <ClientsCard clients={clients} onChange={reload} />
+        <PeopleCard />
         <Collapsible
           title={<span className="font-medium text-slate-700">Advanced</span>}
           meta={
@@ -116,6 +117,108 @@ function CleanupButton({ days, onDone }: { days: number; onDone: () => void }) {
     >
       {busy ? "Cleaning…" : "Clean up titles & sites"}
     </button>
+  );
+}
+
+/* ---------------- People (team members & agent tokens) ---------------- */
+
+/**
+ * Add teammates and issue each machine's agent token. The token is shown ONCE
+ * on creation (it's never stored in a readable form) — copy it into that
+ * machine's setup with scripts/setup-autostart.ps1.
+ */
+function PeopleCard() {
+  const [people, setPeople] = useState<Person[]>([]);
+  const [name, setName] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [newToken, setNewToken] = useState<{ name: string; token: string } | null>(
+    null,
+  );
+
+  const reload = useCallback(async () => {
+    const r = await api().listPeople();
+    setPeople(r.people);
+  }, []);
+  useEffect(() => {
+    reload();
+  }, [reload]);
+
+  async function add() {
+    if (!name.trim()) return;
+    setBusy(true);
+    try {
+      const r = await api().createPerson({ name: name.trim() });
+      setNewToken({ name: r.person.name, token: r.token });
+      setName("");
+      await reload();
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function remove(id: number) {
+    await api().deletePerson(id);
+    await reload();
+  }
+
+  return (
+    <Panel>
+      <PanelTitle
+        title="People"
+        subtitle="Team members whose machines push time here. Each gets an agent token."
+      />
+      <div className="mb-3 flex gap-2">
+        <input
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+          onKeyDown={(e) => e.key === "Enter" && add()}
+          placeholder="Teammate name"
+          className="flex-1 rounded-xl border border-slate-200 px-3 py-1.5 text-sm focus:border-brand focus:outline-none"
+        />
+        <button
+          onClick={add}
+          disabled={busy || !name.trim()}
+          className="rounded-xl bg-brand px-3 py-1.5 text-sm font-medium text-white hover:opacity-90 disabled:opacity-60"
+        >
+          Add person
+        </button>
+      </div>
+
+      {newToken ? (
+        <div className="mb-3 rounded-xl border border-emerald-200 bg-emerald-50 p-3 text-sm">
+          <div className="mb-1 font-medium text-emerald-800">
+            Agent token for {newToken.name} — copy it now, it won&apos;t be shown again:
+          </div>
+          <code className="block break-all rounded bg-white px-2 py-1 text-xs text-slate-700 ring-1 ring-emerald-200">
+            {newToken.token}
+          </code>
+          <button
+            onClick={() => setNewToken(null)}
+            className="mt-2 text-xs text-emerald-700 underline-offset-2 hover:underline"
+          >
+            Done
+          </button>
+        </div>
+      ) : null}
+
+      {people.length === 0 ? (
+        <p className="text-sm text-slate-400">No people yet.</p>
+      ) : (
+        <ul className="divide-y divide-slate-100">
+          {people.map((p) => (
+            <li key={p.id} className="flex items-center justify-between py-2">
+              <span className="text-sm font-medium text-slate-700">{p.name}</span>
+              <button
+                onClick={() => remove(p.id)}
+                className="text-xs text-slate-400 hover:text-rose-600"
+              >
+                Remove
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+    </Panel>
   );
 }
 

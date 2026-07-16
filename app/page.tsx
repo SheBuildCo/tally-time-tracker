@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import LoadingGate from "@/components/LoadingGate";
+import ExportButton from "@/components/ExportButton";
 import { PageHeading, Panel, PanelTitle, StatCard } from "@/components/ui";
 import { ClientValueDonut, HoursBars } from "@/components/charts";
 import { formatCurrency, formatHours } from "@/lib/format";
@@ -12,7 +13,8 @@ export default function OverviewPage() {
     <div>
       <PageHeading
         title="Overview"
-        subtitle="Where your billable time and value are going, by client."
+        subtitle="Where billable time and value are going, by client."
+        actions={<ExportButton />}
       />
 
       <LoadingGate>

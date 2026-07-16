@@ -18,7 +18,7 @@ import type { DailyTotalRow } from "@/lib/analytics";
 import type { ClientReport } from "@/lib/report";
 
 export default function DailyPage() {
-  const { days, refreshKey } = useDashboard();
+  const { days, personId, refreshKey } = useDashboard();
   const [rows, setRows] = useState<DailyTotalRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [open, setOpen] = useState<{ clientId: number; date: string } | null>(
@@ -32,7 +32,7 @@ export default function DailyPage() {
     let cancelled = false;
     setLoading(true);
     api()
-      .getDaily(days)
+      .getDaily(days, personId)
       .then((r) => {
         if (!cancelled) setRows(r.rows);
       })
@@ -42,7 +42,7 @@ export default function DailyPage() {
     return () => {
       cancelled = true;
     };
-  }, [days, refreshKey]);
+  }, [days, personId, refreshKey]);
 
   useEffect(() => {
     if (!open) {
@@ -52,7 +52,7 @@ export default function DailyPage() {
     let cancelled = false;
     setDetailLoading(true);
     api()
-      .getClientDay(open.clientId, open.date)
+      .getClientDay(open.clientId, open.date, personId)
       .then((r) => {
         if (!cancelled) {
           setDetail(r);
@@ -65,7 +65,7 @@ export default function DailyPage() {
     return () => {
       cancelled = true;
     };
-  }, [open]);
+  }, [open, personId]);
 
   // Group rows by date for readable day headers.
   const byDate = useMemo(() => {

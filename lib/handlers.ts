@@ -25,10 +25,9 @@ import {
   setClientChromeProfile,
   setSetting,
   updateClient,
-  type Person,
   type RuleInput,
 } from "./db";
-import type { Client, RuleMatch, UsageEvent } from "./types";
+import type { Client, Person, RuleMatch, UsageEvent } from "./types";
 
 export function clampDays(n: number): number {
   if (!Number.isFinite(n) || n < 1) return 7;

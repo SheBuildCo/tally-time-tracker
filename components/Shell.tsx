@@ -3,18 +3,21 @@
 import Nav from "./Nav";
 import { RANGE_OPTIONS, useDashboard } from "./DashboardContext";
 
+const selectClass =
+  "rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-sm font-medium text-slate-700 shadow-sm focus:border-brand focus:outline-none focus:ring-2 focus:ring-brand-soft";
+const selectLabelClass =
+  "px-1 text-[11px] font-medium uppercase tracking-wide text-slate-400";
+
 /** Reference-style labelled dropdown for the date range. */
 function RangeSelect() {
   const { days, setDays } = useDashboard();
   return (
     <label className="flex flex-col">
-      <span className="px-1 text-[11px] font-medium uppercase tracking-wide text-slate-400">
-        Date range
-      </span>
+      <span className={selectLabelClass}>Date range</span>
       <select
         value={days}
         onChange={(e) => setDays(Number(e.target.value))}
-        className="rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-sm font-medium text-slate-700 shadow-sm focus:border-brand focus:outline-none focus:ring-2 focus:ring-brand-soft"
+        className={selectClass}
       >
         {RANGE_OPTIONS.map((opt) => (
           <option key={opt.days} value={opt.days}>
@@ -26,26 +29,39 @@ function RangeSelect() {
   );
 }
 
+/** Whose data to show — the whole team, or one person. Hidden until >1 person. */
+function PersonSelect() {
+  const { people, personId, setPersonId } = useDashboard();
+  if (people.length < 2) return null;
+  return (
+    <label className="flex flex-col">
+      <span className={selectLabelClass}>Person</span>
+      <select
+        value={personId ?? ""}
+        onChange={(e) =>
+          setPersonId(e.target.value ? Number(e.target.value) : undefined)
+        }
+        className={selectClass}
+      >
+        <option value="">All team</option>
+        {people.map((p) => (
+          <option key={p.id} value={p.id}>
+            {p.name}
+          </option>
+        ))}
+      </select>
+    </label>
+  );
+}
+
 function TrackerBanner() {
-  const { trackerAvailable, error, loading } = useDashboard();
-  if (loading) return null;
-  if (error) {
-    return (
-      <div className="mb-6 rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">
-        Couldn&apos;t load analytics: {error}
-      </div>
-    );
-  }
-  if (!trackerAvailable) {
-    return (
-      <div className="mb-6 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-700">
-        <strong>ActivityWatch isn&apos;t running.</strong> Showing saved history —
-        start the tracker (aw-qt) to capture today&apos;s activity. See{" "}
-        <code>docs/SETUP.md</code>.
-      </div>
-    );
-  }
-  return null;
+  const { error, loading } = useDashboard();
+  if (loading || !error) return null;
+  return (
+    <div className="mb-6 rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">
+      Couldn&apos;t load analytics: {error}
+    </div>
+  );
 }
 
 export default function Shell({ children }: { children: React.ReactNode }) {
@@ -64,7 +80,8 @@ export default function Shell({ children }: { children: React.ReactNode }) {
           <div className="hidden md:block">
             <Nav />
           </div>
-          <div className="ml-auto">
+          <div className="ml-auto flex items-end gap-3">
+            <PersonSelect />
             <RangeSelect />
           </div>
           <div className="w-full md:hidden">

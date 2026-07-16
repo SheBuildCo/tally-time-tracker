@@ -50,7 +50,7 @@ export default function ActivityPage() {
     <div>
       <PageHeading
         title="Sites & activity"
-        subtitle="Your time by site — expand a site to assign it to a client or see the specific tabs."
+        subtitle="Time by site — expand a site to assign it to a client or see the specific tabs."
       />
 
       <LoadingGate>

@@ -11,6 +11,7 @@ import {
 } from "react";
 import { api } from "@/lib/client";
 import type { Report } from "@/lib/report";
+import type { Person } from "@/lib/types";
 
 interface DashboardState {
   report: Report | null;
@@ -19,6 +20,11 @@ interface DashboardState {
   trackerAvailable: boolean;
   days: number;
   setDays: (d: number) => void;
+  /** People available to filter by; empty until loaded. */
+  people: Person[];
+  /** Selected person to scope views to, or undefined for the whole team. */
+  personId: number | undefined;
+  setPersonId: (id: number | undefined) => void;
   refresh: () => void;
   /** Bumps on every refresh so per-page views can re-fetch in lockstep. */
   refreshKey: number;
@@ -30,6 +36,7 @@ export const RANGE_OPTIONS = [
   { label: "Today", days: 1 },
   { label: "Last 7 days", days: 7 },
   { label: "Last 30 days", days: 30 },
+  { label: "Last 90 days", days: 90 },
 ];
 
 export function DashboardProvider({ children }: { children: React.ReactNode }) {
@@ -38,9 +45,28 @@ export function DashboardProvider({ children }: { children: React.ReactNode }) {
   const [error, setError] = useState<string | null>(null);
   const [trackerAvailable, setTrackerAvailable] = useState(true);
   const [days, setDays] = useState(7);
+  const [people, setPeople] = useState<Person[]>([]);
+  const [personId, setPersonId] = useState<number | undefined>(undefined);
   const [nonce, setNonce] = useState(0);
 
   const refresh = useCallback(() => setNonce((n) => n + 1), []);
+
+  // Load the team roster once so the person selector can offer "All team" plus
+  // each teammate. Harmless (empty) on a single-person instance.
+  useEffect(() => {
+    let cancelled = false;
+    api()
+      .listPeople()
+      .then((r) => {
+        if (!cancelled) setPeople(r.people);
+      })
+      .catch(() => {
+        /* selector just stays empty */
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   // Auto-refresh whenever the user actually looks at the app (window focus /
   // tab becomes visible) and on a light interval while it stays visible, so a
@@ -74,7 +100,7 @@ export function DashboardProvider({ children }: { children: React.ReactNode }) {
     setLoading(true);
     setError(null);
     api()
-      .getAnalytics(days)
+      .getAnalytics(days, personId)
       .then((data) => {
         if (cancelled) return;
         setReport(data);
@@ -92,7 +118,7 @@ export function DashboardProvider({ children }: { children: React.ReactNode }) {
     return () => {
       cancelled = true;
     };
-  }, [days, nonce]);
+  }, [days, personId, nonce]);
 
   const value = useMemo<DashboardState>(
     () => ({
@@ -102,10 +128,13 @@ export function DashboardProvider({ children }: { children: React.ReactNode }) {
       trackerAvailable,
       days,
       setDays,
+      people,
+      personId,
+      setPersonId,
       refresh,
       refreshKey: nonce,
     }),
-    [report, loading, error, trackerAvailable, days, refresh, nonce],
+    [report, loading, error, trackerAvailable, days, people, personId, refresh, nonce],
   );
 
   return <DashboardCtx.Provider value={value}>{children}</DashboardCtx.Provider>;

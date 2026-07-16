@@ -11,7 +11,7 @@ import Database from "better-sqlite3";
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
-import type { Client, MappingRule, RuleMatch } from "./types";
+import type { Client, MappingRule, Person, RuleMatch } from "./types";
 
 // Resolve the DB path lazily (at first connect, not module load) so that env
 // vars set by the launching script or by tests take effect regardless of
@@ -508,11 +508,6 @@ export function setSetting(key: string, value: string | null): void {
 
 // ---- people --------------------------------------------------------------
 
-export interface Person {
-  id: number;
-  name: string;
-  active: boolean;
-}
 interface PersonRow {
   id: number;
   name: string;

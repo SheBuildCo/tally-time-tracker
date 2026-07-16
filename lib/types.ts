@@ -31,6 +31,13 @@ export interface UsageEvent {
   timestamp: string; // ISO8601 start of the slice
 }
 
+/** A team member whose machine pushes usage to a shared instance. */
+export interface Person {
+  id: number;
+  name: string;
+  active: boolean;
+}
+
 /** A client the firm bills. */
 export interface Client {
   id: number;

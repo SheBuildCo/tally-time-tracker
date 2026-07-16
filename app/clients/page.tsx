@@ -9,7 +9,7 @@ import type { Client } from "@/lib/types";
 import type { ClientReport } from "@/lib/report";
 
 export default function ClientsPage() {
-  const { days, refreshKey } = useDashboard();
+  const { days, personId, refreshKey } = useDashboard();
   const [clients, setClients] = useState<Client[]>([]);
   const [selected, setSelected] = useState<number | null>(null);
   const [detail, setDetail] = useState<ClientReport | null>(null);
@@ -31,7 +31,7 @@ export default function ClientsPage() {
     let cancelled = false;
     setLoading(true);
     api()
-      .getClientReport(selected, days)
+      .getClientReport(selected, days, personId)
       .then((r) => {
         if (!cancelled) setDetail(r);
       })
@@ -41,7 +41,7 @@ export default function ClientsPage() {
     return () => {
       cancelled = true;
     };
-  }, [selected, days, refreshKey]);
+  }, [selected, days, personId, refreshKey]);
 
   return (
     <div>
