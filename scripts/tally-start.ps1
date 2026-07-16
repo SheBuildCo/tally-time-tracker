@@ -1,35 +1,40 @@
-# Wrapper run by the "Tally Auto-Start" scheduled task on every logon.
+# Wrapper run by the "Tally Agent" scheduled task on every logon.
 #
-# Installed to %LOCALAPPDATA%\Tally\scripts\tally-start.ps1 (NOT inside the git
-# checkout) by setup-autostart.ps1, so `git pull` can never overwrite or race
-# the script that's invoking it.
+# In the shared/central model an employee machine runs ONLY the push agent —
+# no local server, no build, no database. This script keeps the checkout fresh
+# and runs the agent, which reads local ActivityWatch and pushes to the central
+# Tally server. Installed to %LOCALAPPDATA%\Tally\scripts\ (outside the git
+# checkout) by setup-autostart.ps1, so `git pull` can never clobber it.
 #
-# Each step below is best-effort: a failed pull or install never prevents
-# falling through to build/start against whatever's already on disk, and a
-# failed build restores the last-known-good .next rather than leaving the
-# employee with nothing running. This script is the task's tracked process —
-# it stays in the foreground so Task Scheduler's own "IgnoreNew" single-instance
-# policy applies cleanly.
+# Per-machine config (central URL + this person's token) is written by
+# setup-autostart.ps1 to %LOCALAPPDATA%\Tally\agent.config.ps1 and sourced here.
+# Each step is best-effort: a failed pull or install still falls through to
+# running the agent with whatever is already on disk.
 
 param(
     [string]$RepoPath = "$env:USERPROFILE\tally-app",
-    [string]$Branch = "main",
-    [int]$Port = 3000
+    [string]$Branch = "main"
 )
 
 $DataDir = "$env:LOCALAPPDATA\Tally"
-$LogFile = "$DataDir\autostart.log"
+$LogFile = "$DataDir\agent.log"
+$ConfigFile = "$DataDir\agent.config.ps1"
 
 New-Item -ItemType Directory -Force -Path $DataDir | Out-Null
-$env:TALLY_DATA_DIR = $DataDir
 
 function Log($message) {
-    $line = "[{0}] {1}" -f (Get-Date -Format "yyyy-MM-dd HH:mm:ss"), $message
-    Add-Content -Path $LogFile -Value $line
+    "[{0}] {1}" -f (Get-Date -Format "yyyy-MM-dd HH:mm:ss"), $message |
+        Add-Content -Path $LogFile
 }
 
 if (-not (Test-Path $RepoPath)) {
     Log "ERROR: repo not found at $RepoPath — run setup-autostart.ps1 first."
+    exit 1
+}
+if (Test-Path $ConfigFile) {
+    . $ConfigFile   # sets $env:TALLY_CENTRAL_URL and $env:TALLY_PERSON_TOKEN
+} else {
+    Log "ERROR: $ConfigFile missing — run setup-autostart.ps1 to configure this machine."
     exit 1
 }
 
@@ -37,42 +42,11 @@ Set-Location $RepoPath
 
 Log "Pulling latest ($Branch)..."
 git pull --ff-only origin $Branch *>> $LogFile
-$pullOk = ($LASTEXITCODE -eq 0)
-if (-not $pullOk) { Log "git pull failed (exit $LASTEXITCODE) — continuing with existing checkout." }
+if ($LASTEXITCODE -ne 0) { Log "git pull failed — continuing with existing checkout." }
 
-$installOk = $false
-if ($pullOk) {
-    Log "Installing dependencies..."
-    npm install --no-audit --no-fund *>> $LogFile
-    $installOk = ($LASTEXITCODE -eq 0)
-    if (-not $installOk) { Log "npm install failed (exit $LASTEXITCODE) — continuing with existing node_modules." }
-} else {
-    Log "Skipping npm install (pull failed)."
-}
+Log "Installing dependencies..."
+npm ci *>> $LogFile
+if ($LASTEXITCODE -ne 0) { Log "npm ci failed — continuing with existing node_modules." }
 
-$hadPriorBuild = Test-Path ".next"
-if ($installOk -and $hadPriorBuild) {
-    Rename-Item ".next" ".next.bak" -Force
-}
-
-$buildOk = $false
-if ($installOk) {
-    Log "Building..."
-    npm run build *>> $LogFile
-    $buildOk = ($LASTEXITCODE -eq 0)
-}
-
-if ($buildOk) {
-    if (Test-Path ".next.bak") { Remove-Item ".next.bak" -Recurse -Force }
-    Log "Build succeeded."
-} elseif (Test-Path ".next.bak") {
-    Log "Build failed or skipped — restoring last-known-good build."
-    if (Test-Path ".next") { Remove-Item ".next" -Recurse -Force }
-    Rename-Item ".next.bak" ".next" -Force
-} elseif (-not (Test-Path ".next")) {
-    Log "ERROR: build failed and no prior build exists — nothing to run."
-    exit 1
-}
-
-Log "Starting server on 127.0.0.1:$Port..."
-npm start -- -H 127.0.0.1 -p $Port *>> $LogFile
+Log "Starting Tally agent -> $env:TALLY_CENTRAL_URL"
+npm run agent *>> $LogFile
