@@ -1,11 +1,12 @@
-// Local per-user persistence (SQLite via better-sqlite3).
+// Persistence for the shared team instance (SQLite via better-sqlite3, on the
+// one central server).
 //
-// Stores the things ActivityWatch doesn't know about: the firm's clients and
-// billable rates, and the mapping rules that attribute usage to them. It also
-// keeps a per-day *rollup* of categorized usage (`daily_activity`) so history
-// survives, renders offline, and doesn't depend on ActivityWatch's own
-// retention. Raw events still originate in ActivityWatch; we persist the
-// aggregated result, recomputing the current day live (see lib/ingest.ts).
+// Stores the things ActivityWatch doesn't know about: the team members
+// (`people`), the firm's clients and billable rates, and the mapping rules that
+// attribute usage to them. It keeps a per-person per-day *rollup* of categorized
+// usage (`daily_activity`) plus the raw pushed events (`pushed_events`) that are
+// the source for re-categorization. Raw events originate on each machine's
+// ActivityWatch and are pushed in via lib/ingest.
 
 import Database from "better-sqlite3";
 import crypto from "node:crypto";

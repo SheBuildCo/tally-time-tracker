@@ -24,93 +24,109 @@ reports.
 - **Local & persistent** — a local SQLite store keeps a per-day rollup of your
   tracked time, so history survives and is viewable even when the tracker isn't
   running. Data stays on your machine.
-- **Always-on, nothing to launch** — runs as a lightweight local web server that
-  auto-starts at Windows login; employees just open a bookmark, nothing to
-  install or launch by hand.
+- **Shared team view** — a central server collects everyone's time so you can
+  see team-wide totals per client and produce a weekly/monthly client recap.
+  Each machine runs only a tiny agent; viewing is just a URL, nothing to install.
 
-> **Status:** single user, Windows, local-only. See [Roadmap](#roadmap) for what's
-> deliberately deferred.
+> **Status:** shared team instance (central server + per-machine agents),
+> Windows machines. See [Roadmap](#roadmap) for what's deferred.
 
 ## How it fits together
 
 ```
- ActivityWatch (localhost:5600)        Tally (Next.js server, localhost:3000)
- ┌───────────────────────────┐  read   ┌──────────────────────────────────────┐
- │ aw-watcher-window  (apps) │ ──────▶ │ lib/ingest      snapshot → SQLite      │
- │ aw-watcher-afk     (idle) │         │ lib/categorize  map app/title/url→client│
- │ aw-watcher-web     (URLs) │         │ lib/analytics   aggregate (clients/days)│
- └───────────────────────────┘         │ UI (React)  ◀─ REST (app/api) ─ server  │
-                                        └──────────────────────────────────────┘
+ Each employee machine                         One central server
+ ┌───────────────────────────┐  HTTPS POST     ┌──────────────────────────────────┐
+ │ ActivityWatch (localhost) │   /api/ingest   │ lib/categorize  map → client      │
+ │ Tally agent (npm run agent)│ ─(token)──────▶ │ lib/ingest      rollup per person │
+ │  reads local AW, pushes    │                 │ lib/analytics   aggregate (team)  │
+ └───────────────────────────┘                 │ UI (React) ◀─ REST ─ SQLite       │
+                                                └──────────────────────────────────┘
 ```
 
-Tally **only reads** from ActivityWatch — it never writes tracking data. Past days
-are snapshotted into the local DB and the current day is recomputed live, so the
-dashboard stays correct and keeps history.
+Tally **only reads** from ActivityWatch — never writes tracking data. Each
+machine's agent pushes its raw events to the server, which stores them per
+person, categorizes against the shared rules, and rolls up per-person totals.
+See [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md) for the full shape and setup.
 
 ## Two ways to run it
 
 ### A. Developers — local dev
 ```bash
 npm install
-npm run dev        # http://localhost:3000 (uses the REST API routes)
+npm run dev        # http://localhost:3000
+# in another terminal, push your own machine's ActivityWatch to it:
+TALLY_CENTRAL_URL=http://localhost:3000 TALLY_PERSON_TOKEN=<token> npm run agent
 ```
-Pull the branch and run this — no build or executable step needed to test a change.
+Grab a token from **Settings → People → Add person** (or set `TALLY_PERSON_TOKEN`
+before first run to pin the seeded person's token). No build/executable step to
+test a change — pull the branch and run.
 
-### B. Always-on employee deployment
-Each employee machine runs a production build of the same app, auto-started at
-Windows login and self-updating from git on every boot — see
-[`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md) for the one-time setup
-(`scripts/setup-autostart.ps1`) and how it works.
+### B. Shared team deployment
+One central server behind a login, plus a `setup-autostart.ps1` per machine that
+registers a logon task running `npm run agent` — see
+[`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md).
 
 ## Configuration
 
 Environment variables (all optional):
 
-| Variable          | Default                       | Purpose                                   |
-| ----------------- | ----------------------------- | ----------------------------------------- |
-| `AW_BASE_URL`     | `http://localhost:5600`       | ActivityWatch server URL                  |
-| `TALLY_DATA_DIR`  | `./data`                      | Where the local SQLite store lives        |
-| `TALLY_DB_PATH`   | `<data>/tally.db`             | Explicit SQLite file path (overrides dir) |
+**Server** (the central instance):
 
-In the always-on deployment (see [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md)),
-`tally-start.ps1` sets `TALLY_DATA_DIR` to `%LOCALAPPDATA%\Tally`, so data
-persists across git updates and independent of where the checkout lives.
+| Variable            | Default                 | Purpose                                   |
+| ------------------- | ----------------------- | ----------------------------------------- |
+| `TALLY_DATA_DIR`    | `./data`                | Where the SQLite store lives              |
+| `TALLY_DB_PATH`     | `<data>/tally.db`       | Explicit SQLite file path (overrides dir) |
+| `ANTHROPIC_API_KEY` | — (optional)            | Shared key for AI title/site cleanup      |
+| `TALLY_PERSON_TOKEN`| — (optional)            | Pin the seeded default person's token (dev)|
+
+**Agent** (each machine):
+
+| Variable               | Default                 | Purpose                                |
+| ---------------------- | ----------------------- | -------------------------------------- |
+| `TALLY_CENTRAL_URL`    | — (required)            | Base URL of the central server         |
+| `TALLY_PERSON_TOKEN`   | — (required)            | This machine's person token            |
+| `AW_BASE_URL`          | `http://localhost:5600` | Local ActivityWatch URL                |
+| `TALLY_SYNC_DAYS`      | `2`                     | Trailing days to push each cycle       |
+| `TALLY_SYNC_INTERVAL_SEC` | `300`                | Seconds between pushes                  |
 
 ## Scripts
 
 | Command               | Description                                            |
 | --------------------- | ----------------------------------------------------- |
-| `npm run dev`         | Dashboard in the browser (REST API)                   |
-| `npm run build`       | Production build (used by the always-on deployment)    |
+| `npm run dev`         | Dashboard in the browser (server)                     |
+| `npm run build`       | Production build (for the central server)             |
 | `npm start`           | Serve the production build                             |
+| `npm run agent`       | Push this machine's ActivityWatch to the server       |
 | `npm test`            | Unit tests (categorize, analytics, persistence)       |
 
 ## Project layout
 
 ```
 app/            Next.js App Router — pages (Overview, Clients, Daily, Activity,
-                Settings) + REST API routes
+                Settings) + REST API routes (incl. /api/ingest, /api/people)
 lib/            activitywatch (AW reads), categorize (rules + title labels),
-                analytics (aggregation), ingest (persistence), db (SQLite),
-                report (orchestration), handlers (shared by the API routes),
+                analytics (aggregation), ingest (rollup + push source), db
+                (SQLite: people, clients, rules, per-person rollups, raw events),
+                report (orchestration), handlers (API business logic),
                 client (browser↔REST transport)
 components/     dashboard UI (Tremor + Tailwind, pastel design system in ui.tsx)
-scripts/        tally-start.ps1 (boot wrapper), setup-autostart.ps1 (one-time
-                per-machine provisioning) — see docs/DEPLOYMENT.md
+scripts/        agent.ts (per-machine push agent), tally-start.ps1 (agent boot
+                wrapper), setup-autostart.ps1 (one-time provisioning) — see
+                docs/DEPLOYMENT.md
 __tests__/      unit tests with AW event fixtures
 docs/SETUP.md   ActivityWatch install + browser extension + Comet notes
-docs/DEPLOYMENT.md  always-on employee deployment (Windows auto-start)
+docs/DEPLOYMENT.md  shared team deployment (central server + machine agents)
 ```
 
 ## Roadmap
 
 Deferred for now, designed for but not yet built:
 
-- Central team server + multi-user sync (the `lib/` logic can point at a central
-  aggregator instead of `localhost:5600`).
-- Authentication & roles.
-- Invoice generation / PDF export of a client's day.
-- macOS / Linux always-on deployment (Windows is the team target today).
+- Calendar-month range selection (e.g. "July") for the monthly recap — views are
+  trailing-window today (7/30/90 days).
+- In-app auth / roles (today access is gated at the edge, e.g. Cloudflare Access).
+- Invoice generation / PDF export of a client's month.
+- macOS / Linux machine agents (Windows is the team target today).
 
 ## Licensing
 

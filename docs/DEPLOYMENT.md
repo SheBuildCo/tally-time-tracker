@@ -1,66 +1,124 @@
-# Deployment — always-on local instance (employee machines)
+# Deployment — shared team instance (central server + machine agents)
 
-Tally no longer ships as a packaged installer. Instead, each employee's machine
-runs a normal Next.js production server that starts itself automatically at
-login and updates itself from git on every boot — nothing to download, nothing
-to launch by hand.
+Tally runs as **one central server** that the whole team shares, plus a
+**lightweight agent on each employee machine** that reads that machine's local
+ActivityWatch and pushes the day's usage to the server. The server categorizes
+everything against one shared set of clients/rules and stores each person's time
+so anyone can view team-wide totals (and one person can produce the weekly /
+monthly client recap).
 
-## How it works
+```
+ Each employee machine                         One central server (~$5/mo VPS)
+ ┌───────────────────────────┐  HTTPS POST     ┌──────────────────────────────────┐
+ │ ActivityWatch (localhost) │   /api/ingest   │ Next.js app + one SQLite file     │
+ │ Tally agent (npm run agent)│ ─(token)──────▶ │  shared clients/rules, all people │
+ └───────────────────────────┘                 │  dashboard (team + per person)    │
+                                                └──────────────────────────────────┘
+     nothing else runs on the machine              ▲ Cloudflare Tunnel + Access (login)
+                                                    │ team views in a browser — no install
+```
 
-1. A Windows **Scheduled Task** ("Tally Auto-Start") fires at logon and runs
-   [`scripts/tally-start.ps1`](../scripts/tally-start.ps1).
-2. That script does, on every firing: `git pull` the deploy branch → `npm
-   install` → `npm run build` → `npm start` (bound to `127.0.0.1:3000`). Each
-   step is best-effort — a failed pull or install just falls through to
-   whatever's already on disk, and a failed build restores the previous
-   working build, so a bad push never takes down an already-running instance.
-3. The task's `IgnoreNew` policy means firing it again while it's already
-   running (e.g. a second logon) is a no-op — no port-conflict or
-   double-instance handling needed beyond that.
-4. Local data (the SQLite store, mapping rules, clients) lives in
-   `%LOCALAPPDATA%\Tally`, set via the `TALLY_DATA_DIR` environment variable by
-   the wrapper script — independent of wherever the git checkout lives, so it
-   survives re-clones and checkout moves.
-5. Employees reach the dashboard at `http://localhost:3000` via a bookmark or
-   pinned tab they set up once. The boot task does not open a browser for
-   them.
+Nothing is installed on employee machines except Node, Git, ActivityWatch, and
+this repo's agent — no local database, build, or dashboard. Viewing is just a
+URL behind a login; the server is updated once, centrally.
 
-## One-time setup on a new employee machine
+## A. Stand up the central server (once)
 
-Prerequisites (not automated by this repo — confirm before rollout):
+Any always-on Linux host works; a ~$4-6/mo VPS (Hetzner, DigitalOcean, Vultr)
+is plenty for a small team pushing daily rollups.
 
-- **Node.js 22 LTS** and **Git for Windows** installed and on `PATH`.
-- **Git access to this private repo** configured for that machine/account —
-  either a cached Git Credential Manager login for the employee's own GitHub
-  account, or a repo-scoped deploy key/PAT provisioned by IT. Pick one
-  approach across the team; `git pull` in `tally-start.ps1` runs
-  unattended and needs it to already work non-interactively.
+1. **Provision** a small VPS, install **Node 22 LTS** and **git**.
+2. **Clone & build:**
+   ```bash
+   git clone https://github.com/SheBuildCo/tally-app.git
+   cd tally-app
+   npm ci
+   npm run build
+   ```
+   `better-sqlite3` compiles/downloads a prebuilt binary for the host during
+   `npm ci` — no extra toolchain needed on Node 22 x64.
+3. **Run** with a stable data directory and the shared Anthropic key (optional,
+   for AI cleanup) as a host env var, bound to loopback (Cloudflare fronts it):
+   ```bash
+   TALLY_DATA_DIR=/var/lib/tally \
+   ANTHROPIC_API_KEY=sk-ant-...   \
+   npm start -- -H 127.0.0.1 -p 3000
+   ```
+   Run it under a process manager (systemd, pm2) so it restarts on reboot. The
+   SQLite database lives at `$TALLY_DATA_DIR/tally.db`.
+4. **Back it up:** a nightly copy of `tally.db` (e.g. `sqlite3 tally.db ".backup
+   /backups/tally-$(date +%F).db"` via cron) is enough — the data is small.
 
-Then, from an elevated-not-required PowerShell prompt:
+### Put it behind a login (Cloudflare Tunnel + Access — free)
+
+1. Add a **Cloudflare Tunnel** pointing at `http://127.0.0.1:3000` (via
+   `cloudflared`) — this gives HTTPS with no open inbound ports.
+2. Add a **Cloudflare Access** application over the tunnel hostname with an
+   email allowlist (or your Google/Microsoft IdP) so only teammates can reach
+   the dashboard. Access is free for small teams.
+3. **Exempt the agent path:** add an Access policy that **bypasses**
+   `/api/ingest` (or attach a service token), so machine agents can POST
+   non-interactively. The endpoint is still protected — it requires a valid
+   per-person token — so bypassing the interactive login there is safe.
+
+## B. Add your team (once per person)
+
+In the dashboard: **Settings → People → Add person**. Each add issues that
+machine's **agent token**, shown exactly once. Copy it — you'll paste it into
+that person's machine setup below. (Equivalently: `POST /api/people {name}`.)
+
+Set up your clients and billable rates in **Settings → Clients & rates** as
+before; these are now shared by the whole team.
+
+## C. Set up each employee machine (once)
+
+Prerequisites on the machine: **Node 22 LTS**, **Git for Windows**,
+**ActivityWatch** running (see [SETUP.md](SETUP.md)), and git access to this
+repo (a cached Git Credential Manager login or a repo-scoped deploy key, so the
+agent's `git pull` runs non-interactively).
+
+From a PowerShell prompt (no admin needed), with the person's token from step B:
 
 ```powershell
 cd path\to\tally-app\scripts
-.\setup-autostart.ps1 -RepoUrl "https://github.com/SheBuildCo/tally-app.git"
+.\setup-autostart.ps1 `
+    -RepoUrl    "https://github.com/SheBuildCo/tally-app.git" `
+    -CentralUrl "https://tally.example.com" `
+    -Token      "<the person's agent token>"
 ```
 
-This clones the repo (if not already present), installs the boot wrapper to
-`%LOCALAPPDATA%\Tally\scripts\`, registers the scheduled task, and fires it
-once immediately so you can confirm the app comes up before the first real
-reboot.
+This clones the repo, writes the machine's config (central URL + token) to
+`%LOCALAPPDATA%\Tally\agent.config.ps1` (outside the checkout — it holds a
+secret), installs the boot wrapper, and registers the **"Tally Agent"** logon
+task that runs `npm run agent`. The agent reads the machine's local
+ActivityWatch and pushes each recent day to the server every few minutes, now
+and on every future logon. It auto-updates via `git pull` on each logon.
+
+## How updates work now
+
+- **Server / dashboard:** update once on the VPS (`git pull && npm ci && npm run
+  build`, restart). Everyone sees the new version immediately — no reinstalls.
+- **Machine agents:** auto-update on each logon (the task's `git pull`). The
+  agent is small and changes rarely.
 
 ## Notes and known limitations
 
-- **Deploy branch stability.** Whatever is on the `main` branch (the default
-  `-Branch` for both scripts) ships to every employee machine on their next
-  login — there's no staging gate in this flow. Keep a CI check (`npm ci &&
-  npm test`) gating merges to that branch.
-- **Firewall.** The server binds `127.0.0.1` only (not `0.0.0.0`), which
-  should avoid the Windows Defender Firewall's inbound-connection prompt for a
-  loopback-only server. Confirm on a real machine/image — some endpoint
-  security tools hook regardless of bind address.
-- **Hidden console window.** The task runs with `-WindowStyle Hidden` and the
-  task's own "Hidden" setting. If a console window still flashes briefly on
-  some machine images, wrap the PowerShell invocation in a `.vbs` shim
-  (`WScript.Shell.Run(cmd, 0, False)`) instead.
-- **Logs.** Each run appends to `%LOCALAPPDATA%\Tally\autostart.log` — check
-  this first when the app doesn't come up after a reboot.
+- **Privacy.** Every person's full detail (per-client hours, sites, and
+  tab/window titles) is centralized and visible to anyone who can open the
+  dashboard. That's the chosen tradeoff for rich recaps; gate the dashboard with
+  Access accordingly.
+- **Reporting ranges.** Views use trailing windows (Today / 7 / 30 / 90 days) —
+  7 days covers the weekly recap and 30 the monthly one closely. True
+  calendar-month selection (e.g. "July") is a deliberate follow-up: it needs an
+  explicit start/end-date path threaded through the day-based aggregation, not
+  built here.
+- **Firewall / hosting.** The server binds `127.0.0.1`; Cloudflare Tunnel
+  handles inbound, so no ports are exposed.
+- **Anthropic key.** Prefer the host `ANTHROPIC_API_KEY` env var on the server;
+  the in-app Settings key still works (stored in the shared DB, behind Access).
+- **Logs.** The agent appends to `%LOCALAPPDATA%\Tally\agent.log` on each
+  machine — check it first if a machine's time stops appearing.
+- **Local `better-sqlite3` ABI error** (`NODE_MODULE_VERSION 130 vs 127`) on a
+  developer checkout that predates the de-Electron migration: a stale native
+  binary. Fix with `npm rebuild better-sqlite3` (or delete `node_modules` and
+  reinstall).
