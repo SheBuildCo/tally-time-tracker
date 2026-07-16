@@ -16,7 +16,12 @@ export async function GET(
   }
   try {
     const days = Number(searchParams.get("days") ?? "7");
-    const report = await getClientReport(id, days);
+    const person = searchParams.get("personId");
+    const report = await getClientReport(
+      id,
+      days,
+      person ? Number(person) : undefined,
+    );
     if (!report) {
       return NextResponse.json({ error: "unknown client" }, { status: 404 });
     }

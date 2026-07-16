@@ -8,6 +8,7 @@
 // aggregated result, recomputing the current day live (see lib/ingest.ts).
 
 import Database from "better-sqlite3";
+import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import type { Client, MappingRule, RuleMatch } from "./types";
@@ -30,6 +31,7 @@ function connect(): Database.Database {
   const db = new Database(DB_PATH);
   db.pragma("journal_mode = WAL");
   migrate(db);
+  seedDefaultPerson(db);
   seedIfEmpty(db);
   _db = db;
   return db;
@@ -37,6 +39,15 @@ function connect(): Database.Database {
 
 function migrate(db: Database.Database): void {
   db.exec(`
+    -- Team members whose machines push usage to this (shared) instance. Each
+    -- person's push agent authenticates with its unique token. On a single-user
+    -- local install there's just one seeded person (see seedDefaultPerson).
+    CREATE TABLE IF NOT EXISTS people (
+      id     INTEGER PRIMARY KEY AUTOINCREMENT,
+      name   TEXT NOT NULL,
+      token  TEXT NOT NULL UNIQUE,   -- bearer secret the machine's agent sends
+      active INTEGER NOT NULL DEFAULT 1
+    );
     CREATE TABLE IF NOT EXISTS clients (
       id            INTEGER PRIMARY KEY AUTOINCREMENT,
       name          TEXT NOT NULL UNIQUE,
@@ -56,12 +67,16 @@ function migrate(db: Database.Database): void {
       billable    INTEGER NOT NULL DEFAULT 1,
       priority    INTEGER NOT NULL DEFAULT 100
     );
-    -- Per-day rollup of categorized usage. client_id uses -1 for "no client"
-    -- (so the primary key works; SQLite treats NULLs as distinct). 'unassigned'
-    -- distinguishes "no rule matched" from an explicit null-client rule. 'host'
-    -- is part of the key because the rollup groups by it (lib/ingest.ts) — two
-    -- tabs with the same title on different domains are distinct activities.
+    -- Per-day rollup of categorized usage, per person. person_id is the FIRST
+    -- key component so two teammates' otherwise-identical days never collide
+    -- (the whole reason a shared instance is possible). client_id uses -1 for
+    -- "no client" (so the primary key works; SQLite treats NULLs as distinct).
+    -- 'unassigned' distinguishes "no rule matched" from an explicit null-client
+    -- rule. 'host' is part of the key because the rollup groups by it
+    -- (lib/ingest.ts) — two tabs with the same title on different domains are
+    -- distinct activities.
     CREATE TABLE IF NOT EXISTS daily_activity (
+      person_id  INTEGER NOT NULL DEFAULT 1,
       day        TEXT NOT NULL,
       client_id  INTEGER NOT NULL,        -- -1 = no client
       app        TEXT NOT NULL,
@@ -71,7 +86,17 @@ function migrate(db: Database.Database): void {
       billable   INTEGER NOT NULL DEFAULT 0,
       unassigned INTEGER NOT NULL DEFAULT 0,
       seconds    INTEGER NOT NULL DEFAULT 0,
-      PRIMARY KEY (day, client_id, app, activity, host, profile, billable, unassigned)
+      PRIMARY KEY (person_id, day, client_id, app, activity, host, profile, billable, unassigned)
+    );
+    -- Raw pushed usage events, per person per day, kept as the central "source"
+    -- that replaces per-machine ActivityWatch: re-syncing rules or AI cleanup
+    -- recomputes the rollup from these instead of re-reading anyone's local AW.
+    CREATE TABLE IF NOT EXISTS pushed_events (
+      person_id   INTEGER NOT NULL,
+      day         TEXT NOT NULL,
+      events_json TEXT NOT NULL,          -- JSON array of UsageEvent
+      received_at TEXT NOT NULL,
+      PRIMARY KEY (person_id, day)
     );
     -- Days whose rollup is complete (the day is over and was ingested).
     CREATE TABLE IF NOT EXISTS day_finalized (
@@ -105,6 +130,43 @@ function migrate(db: Database.Database): void {
   addColumnIfMissing(db, "rules", "match_profile", "TEXT");
   migrateDailyActivityPk(db);
   migrateDailyActivityProfile(db);
+  migrateDailyActivityPerson(db);
+}
+
+// daily_activity gained a leading `person_id` key column so a shared instance
+// can hold multiple teammates' rows without collision. Rebuild the table with
+// person_id first in the primary key, defaulting existing (single-user) rows to
+// person 1 — the seeded default person. Same rename→create→copy pattern as the
+// other daily_activity migrations.
+function migrateDailyActivityPerson(db: Database.Database): void {
+  const cols = db.prepare("PRAGMA table_info(daily_activity)").all() as Array<{
+    name: string;
+  }>;
+  if (cols.some((c) => c.name === "person_id")) return; // already migrated/fresh
+
+  db.exec(`
+    BEGIN;
+    ALTER TABLE daily_activity RENAME TO daily_activity_legacy;
+    CREATE TABLE daily_activity (
+      person_id  INTEGER NOT NULL DEFAULT 1,
+      day        TEXT NOT NULL,
+      client_id  INTEGER NOT NULL,
+      app        TEXT NOT NULL,
+      activity   TEXT NOT NULL,
+      host       TEXT NOT NULL DEFAULT '',
+      profile    TEXT NOT NULL DEFAULT '',
+      billable   INTEGER NOT NULL DEFAULT 0,
+      unassigned INTEGER NOT NULL DEFAULT 0,
+      seconds    INTEGER NOT NULL DEFAULT 0,
+      PRIMARY KEY (person_id, day, client_id, app, activity, host, profile, billable, unassigned)
+    );
+    INSERT INTO daily_activity
+      (person_id, day, client_id, app, activity, host, profile, billable, unassigned, seconds)
+      SELECT 1, day, client_id, app, activity, host, profile, billable, unassigned, seconds
+      FROM daily_activity_legacy;
+    DROP TABLE daily_activity_legacy;
+    COMMIT;
+  `);
 }
 
 /** Add a column to an existing table if it isn't already present. */
@@ -197,6 +259,7 @@ function migrateDailyActivityPk(db: Database.Database): void {
 const NO_CLIENT = -1;
 
 export interface DailyActivityRow {
+  personId: number;
   day: string;
   clientId: number | null;
   app: string;
@@ -209,6 +272,7 @@ export interface DailyActivityRow {
 }
 
 interface DailyActivityDbRow {
+  person_id: number;
   day: string;
   client_id: number;
   app: string;
@@ -222,6 +286,7 @@ interface DailyActivityDbRow {
 
 function toDailyRow(r: DailyActivityDbRow): DailyActivityRow {
   return {
+    personId: r.person_id,
     day: r.day,
     clientId: r.client_id === NO_CLIENT ? null : r.client_id,
     app: r.app,
@@ -234,22 +299,30 @@ function toDailyRow(r: DailyActivityDbRow): DailyActivityRow {
   };
 }
 
-/** Replace a single day's rollup atomically (ingest recomputes the whole day). */
+/**
+ * Replace one person's rollup for a single day atomically. The DELETE is scoped
+ * to (person_id, day) — NOT day alone — so a teammate's sync never wipes the
+ * rest of the team's rows for that day.
+ */
 export function replaceDayActivity(
+  personId: number,
   day: string,
   rows: DailyActivityRow[],
 ): void {
   const db = connect();
-  const del = db.prepare("DELETE FROM daily_activity WHERE day = ?");
+  const del = db.prepare(
+    "DELETE FROM daily_activity WHERE person_id = ? AND day = ?",
+  );
   const ins = db.prepare(
     `INSERT INTO daily_activity
-       (day, client_id, app, activity, host, profile, billable, unassigned, seconds)
-     VALUES (@day, @client_id, @app, @activity, @host, @profile, @billable, @unassigned, @seconds)`,
+       (person_id, day, client_id, app, activity, host, profile, billable, unassigned, seconds)
+     VALUES (@person_id, @day, @client_id, @app, @activity, @host, @profile, @billable, @unassigned, @seconds)`,
   );
   const tx = db.transaction((rs: DailyActivityRow[]) => {
-    del.run(day);
+    del.run(personId, day);
     for (const r of rs) {
       ins.run({
+        person_id: personId,
         day,
         client_id: r.clientId ?? NO_CLIENT,
         app: r.app,
@@ -265,17 +338,30 @@ export function replaceDayActivity(
   tx(rows);
 }
 
-/** Fetch stored rollup rows for an inclusive day range [startDay, endDay]. */
+/**
+ * Fetch stored rollup rows for an inclusive day range [startDay, endDay].
+ * Omit `personId` for the whole team (the recap view); pass it to scope to one
+ * person.
+ */
 export function getActivityRows(
   startDay: string,
   endDay: string,
+  personId?: number,
 ): DailyActivityRow[] {
-  return connect()
-    .prepare(
-      "SELECT * FROM daily_activity WHERE day >= ? AND day <= ? ORDER BY day",
-    )
-    .all(startDay, endDay)
-    .map((r) => toDailyRow(r as DailyActivityDbRow));
+  const db = connect();
+  const rows =
+    personId === undefined
+      ? db
+          .prepare(
+            "SELECT * FROM daily_activity WHERE day >= ? AND day <= ? ORDER BY day",
+          )
+          .all(startDay, endDay)
+      : db
+          .prepare(
+            "SELECT * FROM daily_activity WHERE person_id = ? AND day >= ? AND day <= ? ORDER BY day",
+          )
+          .all(personId, startDay, endDay);
+  return rows.map((r) => toDailyRow(r as DailyActivityDbRow));
 }
 
 export function markFinalized(day: string, finalizedAt: string): void {
@@ -418,6 +504,117 @@ export function setSetting(key: string, value: string | null): void {
        ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
     )
     .run(key, value);
+}
+
+// ---- people --------------------------------------------------------------
+
+export interface Person {
+  id: number;
+  name: string;
+  active: boolean;
+}
+interface PersonRow {
+  id: number;
+  name: string;
+  token: string;
+  active: number;
+}
+
+function toPerson(r: PersonRow): Person {
+  return { id: r.id, name: r.name, active: !!r.active };
+}
+
+/** Generate an opaque bearer token for a person's push agent. */
+export function newPersonToken(): string {
+  return crypto.randomBytes(24).toString("base64url");
+}
+
+/** All people (token omitted — never returned to the UI). */
+export function listPeople(): Person[] {
+  return connect()
+    .prepare("SELECT * FROM people ORDER BY name")
+    .all()
+    .map((r) => toPerson(r as PersonRow));
+}
+
+export function getPerson(id: number): Person | undefined {
+  const row = connect()
+    .prepare("SELECT * FROM people WHERE id = ?")
+    .get(id) as PersonRow | undefined;
+  return row ? toPerson(row) : undefined;
+}
+
+/** Resolve a person from the bearer token an agent presents (active only). */
+export function getPersonByToken(token: string): Person | undefined {
+  if (!token) return undefined;
+  const row = connect()
+    .prepare("SELECT * FROM people WHERE token = ? AND active = 1")
+    .get(token) as PersonRow | undefined;
+  return row ? toPerson(row) : undefined;
+}
+
+/** Create a person, returning the row plus the freshly-issued token (shown once). */
+export function createPerson(
+  name: string,
+  token: string = newPersonToken(),
+): { person: Person; token: string } {
+  const info = connect()
+    .prepare("INSERT INTO people (name, token) VALUES (?, ?)")
+    .run(name, token);
+  return { person: getPerson(Number(info.lastInsertRowid))!, token };
+}
+
+export function deletePerson(id: number): void {
+  connect().prepare("DELETE FROM people WHERE id = ?").run(id);
+}
+
+// ---- pushed events (central "source" for re-categorization) ---------------
+
+export interface PushedDay {
+  personId: number;
+  day: string;
+}
+
+/** Store (replace) one person's raw pushed events for a day. */
+export function storePushedEvents(
+  personId: number,
+  day: string,
+  eventsJson: string,
+  receivedAt: string,
+): void {
+  connect()
+    .prepare(
+      `INSERT INTO pushed_events (person_id, day, events_json, received_at)
+       VALUES (?, ?, ?, ?)
+       ON CONFLICT(person_id, day) DO UPDATE SET
+         events_json = excluded.events_json,
+         received_at = excluded.received_at`,
+    )
+    .run(personId, day, eventsJson, receivedAt);
+}
+
+/** Read one person-day's raw pushed events JSON (undefined if none stored). */
+export function getPushedEvents(
+  personId: number,
+  day: string,
+): string | undefined {
+  const row = connect()
+    .prepare(
+      "SELECT events_json FROM pushed_events WHERE person_id = ? AND day = ?",
+    )
+    .get(personId, day) as { events_json: string } | undefined;
+  return row?.events_json;
+}
+
+/** All (person, day) pairs with stored events in [startDay, endDay] — drives re-sync. */
+export function listPushedDays(startDay: string, endDay: string): PushedDay[] {
+  return (
+    connect()
+      .prepare(
+        "SELECT person_id, day FROM pushed_events WHERE day >= ? AND day <= ? ORDER BY person_id, day",
+      )
+      .all(startDay, endDay) as Array<{ person_id: number; day: string }>
+  ).map((r) => ({ personId: r.person_id, day: r.day }));
 }
 
 // ---- row mapping ---------------------------------------------------------
@@ -576,6 +773,23 @@ export function deleteRule(id: number): void {
 }
 
 // ---- seed ----------------------------------------------------------------
+
+/**
+ * Ensure at least one person (id 1) exists, so single-user local dev works with
+ * no admin step and legacy rows (migrated to person_id 1) have an owner. On a
+ * shared instance the admin adds the real teammates; this just guarantees the
+ * default is present. A dev machine can pin the default person's token via
+ * TALLY_PERSON_TOKEN so its agent can push to a freshly-seeded DB.
+ */
+function seedDefaultPerson(db: Database.Database): void {
+  const count = db.prepare("SELECT COUNT(*) AS n FROM people").get() as {
+    n: number;
+  };
+  if (count.n > 0) return;
+  const name = process.env.TALLY_PERSON_NAME || "Me";
+  const token = process.env.TALLY_PERSON_TOKEN || newPersonToken();
+  db.prepare("INSERT INTO people (name, token) VALUES (?, ?)").run(name, token);
+}
 
 /**
  * On first run, seed the apps the firm uses so the dashboard shows meaningful

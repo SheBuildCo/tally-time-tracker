@@ -1,22 +1,22 @@
-// Ingestion: snapshot ActivityWatch usage into the local rollup tables so history
-// persists and renders without AW running. The current (UTC) day is always
-// recomputed live; past days are ingested once and marked finalized.
+// Ingestion & rollup for the shared/central model.
 //
-// "Days" here are UTC days (matching analytics' `timestamp.slice(0,10)` grouping),
-// keeping persistence and aggregation consistent.
+// Each employee's machine runs a push agent that reads its OWN local
+// ActivityWatch and POSTs the raw events here (see app/api/ingest). The server
+// stores those raw events per (person, day) as the source of truth and derives
+// the per-person `daily_activity` rollup from them — so the dashboard reads,
+// and "re-sync with current rules", never depend on reaching anyone's local AW.
+//
+// "Days" here are UTC days (matching analytics' `timestamp.slice(0,10)`
+// grouping), keeping persistence and aggregation consistent.
 
-import {
-  getUsageEvents,
-  ActivityWatchError,
-  type DateRange,
-} from "./activitywatch";
 import { activityLabel, appLabel, categorizeAll, cleanTitle, hostOf } from "./categorize";
 import {
   getActivityRows,
-  isFinalized,
+  getPushedEvents,
+  listPushedDays,
   listRules,
-  markFinalized,
   replaceDayActivity,
+  storePushedEvents,
   type DailyActivityRow,
 } from "./db";
 import type { Categorized, UsageEvent } from "./types";
@@ -42,15 +42,11 @@ export function dayStrings(days: number, end: string = todayUTC()): string[] {
   return out;
 }
 
-/** The [start, end) UTC range covering a single day. */
-function dayRange(day: string): DateRange {
-  const start = new Date(`${day}T00:00:00.000Z`);
-  const end = new Date(start.getTime() + 86400000);
-  return { start, end };
-}
-
-/** Roll up categorized events for one day into storage rows. */
-export function rollup(categorized: Categorized[]): DailyActivityRow[] {
+/** Roll up one person's categorized events for a day into storage rows. */
+export function rollup(
+  personId: number,
+  categorized: Categorized[],
+): DailyActivityRow[] {
   const agg = new Map<string, DailyActivityRow>();
   for (const c of categorized) {
     const day = c.event.timestamp.slice(0, 10);
@@ -66,7 +62,7 @@ export function rollup(categorized: Categorized[]): DailyActivityRow[] {
     }|${unassigned ? 1 : 0}`;
     const row =
       agg.get(key) ??
-      { day, clientId, app, activity, host, profile, billable, unassigned, seconds: 0 };
+      { personId, day, clientId, app, activity, host, profile, billable, unassigned, seconds: 0 };
     row.seconds += c.event.duration;
     agg.set(key, row);
   }
@@ -76,7 +72,9 @@ export function rollup(categorized: Categorized[]): DailyActivityRow[] {
 /**
  * Reconstruct categorized events from stored rollup rows so the existing
  * analytics functions (buildSummary/buildClientDetail/buildDailyTotals) work
- * unchanged on persisted history. One synthetic event per row.
+ * unchanged on persisted history. One synthetic event per row. Person scoping
+ * happens at the DB query (getActivityRows), so analytics stays person-agnostic
+ * and simply sums whatever rows it's given (the whole team, or one person).
  */
 export function rowsToCategorized(rows: DailyActivityRow[]): Categorized[] {
   return rows.map((r) => {
@@ -99,16 +97,18 @@ export function rowsToCategorized(rows: DailyActivityRow[]): Categorized[] {
 }
 
 /**
- * Ingest a single day from ActivityWatch: fetch, categorize with current rules,
- * roll up and store. Past days are marked finalized. Returns the stored rows.
- * Throws ActivityWatchError if AW can't be reached.
+ * Ingest a push: persist a person's raw events for a day (the source), then
+ * categorize with the shared rules, roll up and store. Returns the stored rows.
  */
-export async function ingestDay(day: string): Promise<DailyActivityRow[]> {
-  const events = await getUsageEvents(dayRange(day));
+export function ingestPushedEvents(
+  personId: number,
+  day: string,
+  events: UsageEvent[],
+): DailyActivityRow[] {
+  storePushedEvents(personId, day, JSON.stringify(events), new Date().toISOString());
   const categorized = categorizeAll(events, listRules());
-  const rows = rollup(categorized);
-  replaceDayActivity(day, rows);
-  if (day < todayUTC()) markFinalized(day, new Date().toISOString());
+  const rows = rollup(personId, categorized);
+  replaceDayActivity(personId, day, rows);
   return rows;
 }
 
@@ -118,70 +118,40 @@ export interface RangeIngest {
 }
 
 /**
- * Get categorized usage for the last `days` days, serving finalized past days
- * from storage and (re)ingesting the current day plus any not-yet-finalized
- * days live. If AW is unreachable, fall back to whatever is stored and report
- * `trackerAvailable: false` so the UI can still show history.
+ * Stored rollup rows for the last `days` days. Omit `personId` for the whole
+ * team (the recap view); pass it to scope to one person. `trackerAvailable` is
+ * always true here — the central server has no local AW of its own; capture
+ * freshness is a per-machine concern surfaced elsewhere.
  */
-export async function getRangeRows(days: number): Promise<RangeIngest> {
-  const today = todayUTC();
-  const wanted = dayStrings(days, today);
-  let trackerAvailable = true;
+export function getRangeRows(days: number, personId?: number): RangeIngest {
+  const wanted = dayStrings(days);
+  const rows = getActivityRows(wanted[0], wanted[wanted.length - 1], personId);
+  return { rows, trackerAvailable: true };
+}
 
-  for (const day of wanted) {
-    const isPast = day < today;
-    if (isPast && isFinalized(day)) continue; // already persisted
-    try {
-      await ingestDay(day);
-    } catch (err) {
-      if (err instanceof ActivityWatchError) {
-        trackerAvailable = false;
-        break; // AW down — stop trying, use stored data
-      }
-      throw err;
-    }
-  }
-
-  const rows = getActivityRows(wanted[0], wanted[wanted.length - 1]);
-  return { rows, trackerAvailable };
+/** Stored rows for a single (possibly historical) day, optionally one person. */
+export function ensureDayRows(day: string, personId?: number): RangeIngest {
+  return { rows: getActivityRows(day, day, personId), trackerAvailable: true };
 }
 
 /**
- * Ensure a single (possibly historical) day is available, ingesting it live
- * unless it's a finalized past day. Returns that day's stored rows.
+ * Re-apply the *current* rules across everyone's stored raw events in the range
+ * (the recap person's "Re-sync with current rules"). Recomputes each affected
+ * (person, day) rollup from the persisted source — no local AW needed.
  */
-export async function ensureDayRows(day: string): Promise<RangeIngest> {
-  const today = todayUTC();
-  let trackerAvailable = true;
-  if (!(day < today && isFinalized(day))) {
-    try {
-      await ingestDay(day);
-    } catch (err) {
-      if (err instanceof ActivityWatchError) trackerAvailable = false;
-      else throw err;
-    }
+export function resyncRange(days: number): RangeIngest {
+  const wanted = dayStrings(days);
+  const start = wanted[0];
+  const end = wanted[wanted.length - 1];
+  const rules = listRules();
+  for (const { personId, day } of listPushedDays(start, end)) {
+    const json = getPushedEvents(personId, day);
+    if (!json) continue;
+    const events = JSON.parse(json) as UsageEvent[];
+    const categorized = categorizeAll(events, rules);
+    replaceDayActivity(personId, day, rollup(personId, categorized));
   }
-  return { rows: getActivityRows(day, day), trackerAvailable };
-}
-
-/** Re-ingest a range applying the *current* rules (used after rules change). */
-export async function resyncRange(days: number): Promise<RangeIngest> {
-  const today = todayUTC();
-  const wanted = dayStrings(days, today);
-  let trackerAvailable = true;
-  for (const day of wanted) {
-    try {
-      await ingestDay(day); // ingestDay always replaces the day's rows
-    } catch (err) {
-      if (err instanceof ActivityWatchError) {
-        trackerAvailable = false;
-        break;
-      }
-      throw err;
-    }
-  }
-  const rows = getActivityRows(wanted[0], wanted[wanted.length - 1]);
-  return { rows, trackerAvailable };
+  return { rows: getActivityRows(start, end), trackerAvailable: true };
 }
 
 // Re-exported so callers (and tests) can build labels consistently.

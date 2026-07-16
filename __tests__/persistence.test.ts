@@ -65,7 +65,7 @@ const categorized = categorizeAll(events, rules);
 
 describe("rollup + reconstruct preserves analytics", () => {
   it("buildSummary on reconstructed rows matches the original", () => {
-    const rows = rollup(categorized);
+    const rows = rollup(1, categorized);
     const reconstructed = rowsToCategorized(rows);
 
     const a = buildSummary(categorized, clients);
@@ -81,8 +81,8 @@ describe("rollup + reconstruct preserves analytics", () => {
 describe("daily_activity persistence round-trip", () => {
   it("stores and returns a day's rollup", () => {
     const day = "2026-06-23";
-    const rows = rollup(categorized);
-    replaceDayActivity(day, rows);
+    const rows = rollup(1, categorized);
+    replaceDayActivity(1, day, rows);
 
     const back = getActivityRows(day, day);
     const totalSeconds = back.reduce((s, r) => s + r.seconds, 0);
@@ -93,7 +93,7 @@ describe("daily_activity persistence round-trip", () => {
     expect(hn?.unassigned).toBe(true);
 
     // replacing the day doesn't duplicate rows
-    replaceDayActivity(day, rows);
+    replaceDayActivity(1, day, rows);
     expect(getActivityRows(day, day).length).toBe(back.length);
   });
 
@@ -123,10 +123,10 @@ describe("daily_activity persistence round-trip", () => {
         timestamp: `${day}T10:00:00.000Z`,
       }),
     ];
-    const rows = rollup(categorizeAll(sameTitle, rules));
+    const rows = rollup(1, categorizeAll(sameTitle, rules));
     expect(rows.length).toBe(2); // distinct by host
 
-    expect(() => replaceDayActivity(day, rows)).not.toThrow();
+    expect(() => replaceDayActivity(1, day, rows)).not.toThrow();
     const back = getActivityRows(day, day);
     expect(back.length).toBe(2);
     expect(new Set(back.map((r) => r.host)).size).toBe(2);
@@ -153,10 +153,10 @@ describe("daily_activity persistence round-trip", () => {
         timestamp: `${day}T10:00:00.000Z`,
       }),
     ];
-    const rows = rollup(categorizeAll(sameSite, rules));
+    const rows = rollup(1, categorizeAll(sameSite, rules));
     expect(rows.length).toBe(2); // distinct by profile
 
-    replaceDayActivity(day, rows);
+    replaceDayActivity(1, day, rows);
     const back = getActivityRows(day, day);
     expect(back.length).toBe(2);
     expect(new Set(back.map((r) => r.profile))).toEqual(
@@ -167,6 +167,54 @@ describe("daily_activity persistence round-trip", () => {
     expect(new Set(rowsToCategorized(back).map((c) => c.event.profile))).toEqual(
       new Set(["Acme Corp", "Globex"]),
     );
+  });
+});
+
+// The whole point of the shared-instance model: two teammates' identical days
+// must NOT collide, and one person's sync must NOT wipe another's rows.
+describe("multi-person: no collision, no cross-user wipe", () => {
+  it("keeps two people's identical day separate and sums for the team", () => {
+    const day = "2026-05-10";
+    // Byte-identical activity for two different people — same client, app, title.
+    const sameActivity = () =>
+      rollup(
+        0, // personId overwritten per person below
+        categorizeAll(
+          [
+            usage({
+              app: "OUTLOOK.EXE",
+              title: "Inbox",
+              duration: 1800,
+              timestamp: `${day}T09:00:00.000Z`,
+            }),
+          ],
+          rules,
+        ),
+      );
+
+    // Person 1 syncs first, then person 2 syncs the SAME day.
+    replaceDayActivity(1, day, rollup(1, categorizeAll([
+      usage({ app: "OUTLOOK.EXE", title: "Inbox", duration: 1800, timestamp: `${day}T09:00:00.000Z` }),
+    ], rules)));
+    replaceDayActivity(2, day, rollup(2, categorizeAll([
+      usage({ app: "OUTLOOK.EXE", title: "Inbox", duration: 3600, timestamp: `${day}T09:00:00.000Z` }),
+    ], rules)));
+
+    // Person 1's row survived person 2's sync (no cross-user DELETE-by-day wipe).
+    const p1 = getActivityRows(day, day, 1);
+    const p2 = getActivityRows(day, day, 2);
+    expect(p1.reduce((s, r) => s + r.seconds, 0)).toBe(1800);
+    expect(p2.reduce((s, r) => s + r.seconds, 0)).toBe(3600);
+
+    // Team view (no personId) sums both, and analytics agrees.
+    const team = getActivityRows(day, day);
+    expect(team.reduce((s, r) => s + r.seconds, 0)).toBe(1800 + 3600);
+    const summary = buildSummary(rowsToCategorized(team), clients);
+    expect(summary.totalHours).toBe((1800 + 3600) / 3600);
+
+    // Re-syncing person 1 replaces only their rows, leaving person 2 intact.
+    replaceDayActivity(1, day, sameActivity().map((r) => ({ ...r, personId: 1 })));
+    expect(getActivityRows(day, day, 2).reduce((s, r) => s + r.seconds, 0)).toBe(3600);
   });
 });
 

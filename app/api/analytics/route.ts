@@ -8,7 +8,11 @@ export const dynamic = "force-dynamic";
 export async function GET(request: Request) {
   const { searchParams } = new URL(request.url);
   try {
-    const report = await getAnalytics(Number(searchParams.get("days") ?? "7"));
+    const person = searchParams.get("personId");
+    const report = await getAnalytics(
+      Number(searchParams.get("days") ?? "7"),
+      person ? Number(person) : undefined,
+    );
     return NextResponse.json(report);
   } catch (err) {
     return NextResponse.json(

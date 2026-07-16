@@ -8,22 +8,27 @@ import {
   buildDailyReport,
   buildReport,
 } from "./report";
-import { resyncRange } from "./ingest";
+import { ingestPushedEvents, resyncRange, todayUTC } from "./ingest";
 import { runCleanup } from "./cleanup";
 import {
   createClient,
+  createPerson,
   createRule,
   deleteClient,
+  deletePerson,
   deleteRule,
   getClient,
+  getPersonByToken,
   listClients,
+  listPeople,
   listRules,
   setClientChromeProfile,
   setSetting,
   updateClient,
+  type Person,
   type RuleInput,
 } from "./db";
-import type { Client, RuleMatch } from "./types";
+import type { Client, RuleMatch, UsageEvent } from "./types";
 
 export function clampDays(n: number): number {
   if (!Number.isFinite(n) || n < 1) return 7;
@@ -32,15 +37,20 @@ export function clampDays(n: number): number {
 
 // ---- analytics / reports -------------------------------------------------
 
-export const getAnalytics = (days: number) => buildReport(clampDays(days));
+export const getAnalytics = (days: number, personId?: number) =>
+  buildReport(clampDays(days), personId);
 
-export const getClientReport = (clientId: number, days: number) =>
-  buildClientReport(clientId, clampDays(days));
+export const getClientReport = (
+  clientId: number,
+  days: number,
+  personId?: number,
+) => buildClientReport(clientId, clampDays(days), personId);
 
-export const getDaily = (days: number) => buildDailyReport(clampDays(days));
+export const getDaily = (days: number, personId?: number) =>
+  buildDailyReport(clampDays(days), personId);
 
-export const getClientDay = (clientId: number, day: string) =>
-  buildClientDay(clientId, day);
+export const getClientDay = (clientId: number, day: string, personId?: number) =>
+  buildClientDay(clientId, day, personId);
 
 export const resync = async (days: number) => {
   const d = clampDays(days);
@@ -225,9 +235,65 @@ export async function launchClientProfile(input: {
   return { ok: true };
 }
 
+// ---- people --------------------------------------------------------------
+
+/** Team members (tokens never returned to the UI). */
+export const getPeople = () => ({ people: listPeople() });
+
+/**
+ * Add a teammate and issue their agent token. The token is returned exactly
+ * once here (to paste into that machine's agent config) and never again.
+ */
+export function addPerson(input: { name?: unknown }): {
+  person: Person;
+  token: string;
+} {
+  if (typeof input.name !== "string" || !input.name.trim()) {
+    throw new ValidationError("name is required");
+  }
+  return createPerson(input.name.trim());
+}
+
+export function removePerson(id: number): { ok: true } {
+  if (!Number.isInteger(id)) throw new ValidationError("invalid id");
+  deletePerson(id);
+  return { ok: true };
+}
+
+// ---- ingest (push from a machine's agent) --------------------------------
+
+/**
+ * Ingest a push from a person's agent. `token` authenticates the person;
+ * `day` is the UTC day the events cover; `events` is that day's UsageEvent[]
+ * read from the machine's local ActivityWatch. Categorization + rollup happen
+ * here against the shared rules, so everyone maps to the same clients.
+ */
+export function ingest(input: {
+  token?: unknown;
+  day?: unknown;
+  events?: unknown;
+}): { ok: true; personId: number; rows: number } {
+  const token = typeof input.token === "string" ? input.token : "";
+  const person = getPersonByToken(token);
+  if (!person) throw new UnauthorizedError("invalid or missing token");
+
+  const day = typeof input.day === "string" ? input.day : "";
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) {
+    throw new ValidationError("day must be YYYY-MM-DD");
+  }
+  if (day > todayUTC()) throw new ValidationError("day is in the future");
+  if (!Array.isArray(input.events)) {
+    throw new ValidationError("events must be an array");
+  }
+
+  const rows = ingestPushedEvents(person.id, day, input.events as UsageEvent[]);
+  return { ok: true, personId: person.id, rows: rows.length };
+}
+
 // ---- typed errors so each transport maps to its own status/shape ---------
 
 export class ValidationError extends Error {}
 export class NotFoundError extends Error {}
+export class UnauthorizedError extends Error {}
 
 export { getClient };

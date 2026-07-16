@@ -15,7 +15,12 @@ export async function GET(
     return NextResponse.json({ error: "invalid id or date" }, { status: 400 });
   }
   try {
-    const report = await getClientDay(id, date);
+    const person = searchParams.get("personId");
+    const report = await getClientDay(
+      id,
+      date,
+      person ? Number(person) : undefined,
+    );
     if (!report) {
       return NextResponse.json({ error: "unknown client" }, { status: 404 });
     }

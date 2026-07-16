@@ -64,9 +64,9 @@ function cachedEnrichment(): EnrichmentLookup {
   };
 }
 
-/** Full dashboard report for the last `days` days. */
-export async function buildReport(days = 7): Promise<Report> {
-  const { rows, trackerAvailable } = await getRangeRows(days);
+/** Full dashboard report for the last `days` days (optionally one person). */
+export async function buildReport(days = 7, personId?: number): Promise<Report> {
+  const { rows, trackerAvailable } = getRangeRows(days, personId);
   const categorized = rowsToCategorized(rows);
   const clients = listClients();
   const summary = buildSummary(categorized, clients);
@@ -88,10 +88,11 @@ export interface ClientReport extends ClientDetail {
 export async function buildClientReport(
   clientId: number,
   days = 7,
+  personId?: number,
 ): Promise<ClientReport | null> {
   const client = listClients().find((c) => c.id === clientId);
   if (!client) return null;
-  const { rows, trackerAvailable } = await getRangeRows(days);
+  const { rows, trackerAvailable } = getRangeRows(days, personId);
   const categorized = rowsToCategorized(rows);
   const detail = buildClientDetail(categorized, client);
   return { ...detail, range: rangeMeta(days), trackerAvailable };
@@ -103,9 +104,12 @@ export interface DailyReport {
   trackerAvailable: boolean;
 }
 
-/** Daily Totals table data for the last `days` days. */
-export async function buildDailyReport(days = 7): Promise<DailyReport> {
-  const { rows, trackerAvailable } = await getRangeRows(days);
+/** Daily Totals table data for the last `days` days (optionally one person). */
+export async function buildDailyReport(
+  days = 7,
+  personId?: number,
+): Promise<DailyReport> {
+  const { rows, trackerAvailable } = getRangeRows(days, personId);
   const categorized = rowsToCategorized(rows);
   const clients = listClients();
   return {
@@ -119,10 +123,11 @@ export async function buildDailyReport(days = 7): Promise<DailyReport> {
 export async function buildClientDay(
   clientId: number,
   day: string,
+  personId?: number,
 ): Promise<ClientReport | null> {
   const client = listClients().find((c) => c.id === clientId);
   if (!client) return null;
-  const { rows, trackerAvailable } = await ensureDayRows(day);
+  const { rows, trackerAvailable } = ensureDayRows(day, personId);
   const categorized = rowsToCategorized(rows);
   const detail = buildClientDetail(categorized, client);
   return {
