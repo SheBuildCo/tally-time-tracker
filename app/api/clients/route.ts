@@ -4,13 +4,13 @@ import { addClient, getClients, ValidationError } from "@/lib/handlers";
 export const dynamic = "force-dynamic";
 
 export async function GET() {
-  return NextResponse.json(getClients());
+  return NextResponse.json(await getClients());
 }
 
 export async function POST(request: Request) {
   const body = await request.json().catch(() => ({}));
   try {
-    return NextResponse.json(addClient(body), { status: 201 });
+    return NextResponse.json(await addClient(body), { status: 201 });
   } catch (err) {
     if (err instanceof ValidationError) {
       return NextResponse.json({ error: err.message }, { status: 400 });

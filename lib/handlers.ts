@@ -75,26 +75,26 @@ export async function health() {
 // ---- settings ------------------------------------------------------------
 
 /** Store the shared Anthropic API key (write-only — never read back to the UI). */
-export function setApiKey(value: unknown): { ok: true } {
+export async function setApiKey(value: unknown): Promise<{ ok: true }> {
   if (typeof value !== "string") throw new ValidationError("invalid key");
-  setSetting("anthropic_api_key", value.trim() || null);
+  await setSetting("anthropic_api_key", value.trim() || null);
   return { ok: true };
 }
 
 // ---- clients -------------------------------------------------------------
 
-export const getClients = () => ({ clients: listClients() });
+export const getClients = async () => ({ clients: await listClients() });
 
-export function addClient(input: {
+export async function addClient(input: {
   name?: unknown;
   billableRate?: unknown;
   color?: unknown;
-}): { client: Client } {
+}): Promise<{ client: Client }> {
   if (typeof input.name !== "string" || !input.name.trim()) {
     throw new ValidationError("name is required");
   }
   const rate = Number(input.billableRate ?? 0);
-  const client = createClient(
+  const client = await createClient(
     input.name.trim(),
     Number.isFinite(rate) ? rate : 0,
     typeof input.color === "string" ? input.color : undefined,
@@ -102,34 +102,34 @@ export function addClient(input: {
   return { client };
 }
 
-export function patchClient(
+export async function patchClient(
   id: number,
   fields: { name?: unknown; billableRate?: unknown; color?: unknown },
-): { client: Client } {
+): Promise<{ client: Client }> {
   if (!Number.isInteger(id)) throw new ValidationError("invalid id");
   const update: Partial<Pick<Client, "name" | "billableRate" | "color">> = {};
   if (typeof fields.name === "string") update.name = fields.name.trim();
   if (fields.billableRate !== undefined)
     update.billableRate = Number(fields.billableRate);
   if (typeof fields.color === "string") update.color = fields.color;
-  const client = updateClient(id, update);
+  const client = await updateClient(id, update);
   if (!client) throw new NotFoundError("not found");
   return { client };
 }
 
-export function removeClient(id: number): { ok: true } {
+export async function removeClient(id: number): Promise<{ ok: true }> {
   if (!Number.isInteger(id)) throw new ValidationError("invalid id");
-  deleteClient(id);
+  await deleteClient(id);
   return { ok: true };
 }
 
 // ---- rules ---------------------------------------------------------------
 
-export const getRules = () => ({ rules: listRules() });
+export const getRules = async () => ({ rules: await listRules() });
 
-export function addRule(body: Record<string, unknown>): {
-  rule: ReturnType<typeof createRule>;
-} {
+export async function addRule(body: Record<string, unknown>): Promise<{
+  rule: Awaited<ReturnType<typeof createRule>>;
+}> {
   const match: RuleMatch = {};
   if (typeof body.app === "string" && body.app.trim()) match.app = body.app.trim();
   if (typeof body.titleRegex === "string" && body.titleRegex.trim())
@@ -155,12 +155,12 @@ export function addRule(body: Record<string, unknown>): {
     billable: body.billable !== false,
     priority: Number.isFinite(Number(body.priority)) ? Number(body.priority) : 100,
   };
-  return { rule: createRule(input) };
+  return { rule: await createRule(input) };
 }
 
-export function removeRule(id: number): { ok: true } {
+export async function removeRule(id: number): Promise<{ ok: true }> {
   if (!Number.isInteger(id)) throw new ValidationError("invalid id");
-  deleteRule(id);
+  await deleteRule(id);
   return { ok: true };
 }
 
@@ -180,12 +180,12 @@ export async function createChromeProfile(input: {
   clientId?: unknown;
 }): Promise<{
   client: Client;
-  rule: ReturnType<typeof createRule> | null;
+  rule: Awaited<ReturnType<typeof createRule>> | null;
   nameToUse: string;
 }> {
   const id = Number(input.clientId);
   if (!Number.isInteger(id)) throw new ValidationError("clientId is required");
-  const client = getClient(id);
+  const client = await getClient(id);
   if (!client) throw new NotFoundError("client not found");
 
   const chrome = await import("./chrome");
@@ -198,16 +198,16 @@ export async function createChromeProfile(input: {
   const dir = chrome.profileDirForClient(client);
   const name = chrome.sanitizeProfileName(client.name);
   chrome.setProfileDisplayName(dir, name);
-  const saved = setClientChromeProfile(id, dir, name) ?? client;
+  const saved = (await setClientChromeProfile(id, dir, name)) ?? client;
 
   // Profile rules win over domain/title/app (priority 10 < suggestions 50 <
   // seeded 100). Skip if an equivalent one already exists (re-provisioning).
-  const exists = listRules().some(
+  const exists = (await listRules()).some(
     (r) => r.match.profile?.toLowerCase() === name.toLowerCase() && r.clientId === id,
   );
   const rule = exists
     ? null
-    : createRule({
+    : await createRule({
         match: { profile: name },
         clientId: id,
         billable: client.billableRate > 0,
@@ -224,7 +224,7 @@ export async function launchClientProfile(input: {
 }): Promise<{ ok: true }> {
   const id = Number(input.clientId);
   if (!Number.isInteger(id)) throw new ValidationError("clientId is required");
-  const client = getClient(id);
+  const client = await getClient(id);
   if (!client) throw new NotFoundError("client not found");
   if (!client.chromeProfileDir) {
     throw new ValidationError("this client has no Chrome profile yet");
@@ -237,25 +237,25 @@ export async function launchClientProfile(input: {
 // ---- people --------------------------------------------------------------
 
 /** Team members (tokens never returned to the UI). */
-export const getPeople = () => ({ people: listPeople() });
+export const getPeople = async () => ({ people: await listPeople() });
 
 /**
  * Add a teammate and issue their agent token. The token is returned exactly
  * once here (to paste into that machine's agent config) and never again.
  */
-export function addPerson(input: { name?: unknown }): {
+export async function addPerson(input: { name?: unknown }): Promise<{
   person: Person;
   token: string;
-} {
+}> {
   if (typeof input.name !== "string" || !input.name.trim()) {
     throw new ValidationError("name is required");
   }
   return createPerson(input.name.trim());
 }
 
-export function removePerson(id: number): { ok: true } {
+export async function removePerson(id: number): Promise<{ ok: true }> {
   if (!Number.isInteger(id)) throw new ValidationError("invalid id");
-  deletePerson(id);
+  await deletePerson(id);
   return { ok: true };
 }
 
@@ -267,13 +267,13 @@ export function removePerson(id: number): { ok: true } {
  * read from the machine's local ActivityWatch. Categorization + rollup happen
  * here against the shared rules, so everyone maps to the same clients.
  */
-export function ingest(input: {
+export async function ingest(input: {
   token?: unknown;
   day?: unknown;
   events?: unknown;
-}): { ok: true; personId: number; rows: number } {
+}): Promise<{ ok: true; personId: number; rows: number }> {
   const token = typeof input.token === "string" ? input.token : "";
-  const person = getPersonByToken(token);
+  const person = await getPersonByToken(token);
   if (!person) throw new UnauthorizedError("invalid or missing token");
 
   const day = typeof input.day === "string" ? input.day : "";
@@ -285,7 +285,7 @@ export function ingest(input: {
     throw new ValidationError("events must be an array");
   }
 
-  const rows = ingestPushedEvents(person.id, day, input.events as UsageEvent[]);
+  const rows = await ingestPushedEvents(person.id, day, input.events as UsageEvent[]);
   return { ok: true, personId: person.id, rows: rows.length };
 }
 

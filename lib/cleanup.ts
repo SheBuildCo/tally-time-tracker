@@ -67,13 +67,13 @@ export async function runCleanup(
   // Only send strings we haven't cleaned yet (unless forcing a re-clean).
   const cached = force
     ? new Map()
-    : getCleanupFor(
+    : await getCleanupFor(
         inputs.map((i) => i.raw),
         ENRICH_MODEL,
       );
   const todo = inputs.filter((i) => !cached.has(i.raw));
 
-  const clients = listClients();
+  const clients = await listClients();
   const enriched =
     todo.length > 0
       ? await enrichDistinct(todo, { clientNames: clients.map((c) => c.name) })
@@ -81,10 +81,10 @@ export async function runCleanup(
 
   if (enriched.length > 0) {
     const now = new Date().toISOString();
-    upsertCleanup(enriched.map(toCleanupRow), now);
+    await upsertCleanup(enriched.map(toCleanupRow), now);
   }
 
-  const rulesCreated = autoApply(enriched, clients);
+  const rulesCreated = await autoApply(enriched, clients);
 
   return { report: await buildReport(days), cleaned: enriched.length, rulesCreated };
 }
@@ -107,12 +107,12 @@ function toCleanupRow(e: EnrichedItem): CleanupRow {
  * client, skipping any that already have an equivalent rule. Returns the count
  * created.
  */
-function autoApply(
+async function autoApply(
   enriched: EnrichedItem[],
-  clients: ReturnType<typeof listClients>,
-): number {
+  clients: Awaited<ReturnType<typeof listClients>>,
+): Promise<number> {
   const byName = new Map(clients.map((c) => [c.name.toLowerCase(), c]));
-  const existing = listRules();
+  const existing = await listRules();
   const hasDomainRule = (d: string) =>
     existing.some((r) => r.match.urlDomain?.toLowerCase() === d.toLowerCase());
   const hasTitleRule = (t: string) =>
@@ -128,7 +128,7 @@ function autoApply(
       const domain = e.suggestedUrlDomain;
       if (!domain || hasDomainRule(domain)) continue;
       existing.push(
-        createRule({
+        await createRule({
           match: { urlDomain: domain.toLowerCase() },
           clientId: client.id,
           billable: client.billableRate > 0,
@@ -140,7 +140,7 @@ function autoApply(
       const regex = escapeRegExp(e.raw);
       if (hasTitleRule(regex)) continue;
       existing.push(
-        createRule({
+        await createRule({
           match: { titleRegex: regex },
           clientId: client.id,
           billable: client.billableRate > 0,

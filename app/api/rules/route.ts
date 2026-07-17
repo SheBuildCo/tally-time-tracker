@@ -4,7 +4,7 @@ import { addRule, getRules, ValidationError } from "@/lib/handlers";
 export const dynamic = "force-dynamic";
 
 export async function GET() {
-  return NextResponse.json(getRules());
+  return NextResponse.json(await getRules());
 }
 
 export async function POST(request: Request) {
@@ -13,7 +13,7 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "invalid body" }, { status: 400 });
   }
   try {
-    return NextResponse.json(addRule(body), { status: 201 });
+    return NextResponse.json(await addRule(body), { status: 201 });
   } catch (err) {
     if (err instanceof ValidationError) {
       return NextResponse.json({ error: err.message }, { status: 400 });

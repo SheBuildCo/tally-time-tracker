@@ -10,7 +10,7 @@ export const dynamic = "force-dynamic";
 export async function POST(request: Request) {
   const body = await request.json().catch(() => ({}));
   try {
-    return NextResponse.json(ingest(body));
+    return NextResponse.json(await ingest(body));
   } catch (err) {
     if (err instanceof UnauthorizedError) {
       return NextResponse.json({ error: err.message }, { status: 401 });

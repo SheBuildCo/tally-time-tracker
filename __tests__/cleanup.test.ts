@@ -1,16 +1,15 @@
-// Use a throwaway DB before importing anything that opens it.
-import os from "node:os";
-import path from "node:path";
-import fs from "node:fs";
-
-const TMP_DB = path.join(os.tmpdir(), `tally-cleanup-${process.pid}.db`);
-process.env.TALLY_DB_PATH = TMP_DB;
+// This suite drives the real rules/cache tables, so it needs a Postgres
+// database. Point TEST_DATABASE_URL at a THROWAWAY Supabase project (or any
+// scratch Postgres) — never the shared team database: it writes clients and
+// rules. Without it the suite skips.
+const TEST_DB_URL = process.env.TEST_DATABASE_URL;
+if (TEST_DB_URL) process.env.DATABASE_URL = TEST_DB_URL;
 
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Categorized } from "@/lib/types";
 import type { EnrichedItem } from "@/lib/enrich";
 
-// Mock the network + re-ingest seams; the real SQLite DB drives rules/cache.
+// Mock the network + re-ingest seams; the real database drives rules/cache.
 const { mockEnrich, mockGetRangeRows, mockRowsToCategorized } = vi.hoisted(
   () => ({
     mockEnrich: vi.fn(),
@@ -37,17 +36,11 @@ import {
   createClient,
   listRules,
   listClients,
+  _resetConnectionForTests,
 } from "@/lib/db";
 
-function unlinkDb() {
-  for (const ext of ["", "-wal", "-shm"]) {
-    try {
-      fs.unlinkSync(TMP_DB + ext);
-    } catch {
-      /* ignore */
-    }
-  }
-}
+// Skip (rather than fail) when no test database is configured.
+const dbDescribe = TEST_DB_URL ? describe : describe.skip;
 
 function site(url: string, duration: number): Categorized {
   return {
@@ -85,22 +78,27 @@ const ENRICHED: EnrichedItem[] = [
   },
 ];
 
-beforeAll(() => {
-  unlinkDb();
-  createClient("MaasGroup", 150);
-  createClient("Acme", 120);
+beforeAll(async () => {
+  if (!TEST_DB_URL) return;
+  // Idempotent: client names are UNIQUE and the test database persists between
+  // runs, so only create what isn't already there.
+  const existing = new Set((await listClients()).map((c) => c.name));
+  if (!existing.has("MaasGroup")) await createClient("MaasGroup", 150);
+  if (!existing.has("Acme")) await createClient("Acme", 120);
 });
-afterAll(unlinkDb);
+afterAll(async () => {
+  if (TEST_DB_URL) await _resetConnectionForTests();
+});
 
-beforeEach(() => {
+beforeEach(async () => {
   vi.clearAllMocks();
-  clearCleanupCache();
+  if (TEST_DB_URL) await clearCleanupCache();
   mockGetRangeRows.mockResolvedValue({ rows: [], trackerAvailable: true });
   mockRowsToCategorized.mockReturnValue(CATEGORIZED);
   mockEnrich.mockResolvedValue(ENRICHED);
 });
 
-describe("runCleanup", () => {
+dbDescribe("runCleanup", () => {
   it("auto-applies only high-confidence attributions and caches all", async () => {
     const result = await runCleanup(7);
 
@@ -111,8 +109,8 @@ describe("runCleanup", () => {
     expect(result.cleaned).toBe(2);
     expect(result.rulesCreated).toBe(1);
 
-    const maasId = listClients().find((c) => c.name === "MaasGroup")!.id;
-    const rules = listRules();
+    const maasId = (await listClients()).find((c) => c.name === "MaasGroup")!.id;
+    const rules = await listRules();
     const maasRule = rules.find(
       (r) => r.match.urlDomain === "maasgroup.looplogics.com",
     );
@@ -135,7 +133,7 @@ describe("runCleanup", () => {
 
     expect(mockEnrich).not.toHaveBeenCalled(); // nothing new to clean
     expect(result.rulesCreated).toBe(0);
-    const maasRules = listRules().filter(
+    const maasRules = (await listRules()).filter(
       (r) => r.match.urlDomain === "maasgroup.looplogics.com",
     );
     expect(maasRules.length).toBe(1); // no duplicate

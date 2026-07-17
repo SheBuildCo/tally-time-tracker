@@ -47,8 +47,8 @@ function rangeMeta(days: number): RangeMeta {
  * network). Once a cleanup has run, every report reflects cleaned labels and
  * correctly-scoped per-client subdomains with zero API calls.
  */
-function cachedEnrichment(): EnrichmentLookup {
-  const cache = getCleanupCache(ENRICH_MODEL);
+async function cachedEnrichment(): Promise<EnrichmentLookup> {
+  const cache = await getCleanupCache(ENRICH_MODEL);
   return {
     get: (raw) => {
       const r = cache.get(raw);
@@ -66,11 +66,11 @@ function cachedEnrichment(): EnrichmentLookup {
 
 /** Full dashboard report for the last `days` days (optionally one person). */
 export async function buildReport(days = 7, personId?: number): Promise<Report> {
-  const { rows, trackerAvailable } = getRangeRows(days, personId);
+  const { rows, trackerAvailable } = await getRangeRows(days, personId);
   const categorized = rowsToCategorized(rows);
-  const clients = listClients();
+  const clients = await listClients();
   const summary = buildSummary(categorized, clients);
-  const suggestions = suggestRules(categorized, 5, cachedEnrichment());
+  const suggestions = suggestRules(categorized, 5, await cachedEnrichment());
   return {
     ...summary,
     range: rangeMeta(days),
@@ -90,9 +90,9 @@ export async function buildClientReport(
   days = 7,
   personId?: number,
 ): Promise<ClientReport | null> {
-  const client = listClients().find((c) => c.id === clientId);
+  const client = (await listClients()).find((c) => c.id === clientId);
   if (!client) return null;
-  const { rows, trackerAvailable } = getRangeRows(days, personId);
+  const { rows, trackerAvailable } = await getRangeRows(days, personId);
   const categorized = rowsToCategorized(rows);
   const detail = buildClientDetail(categorized, client);
   return { ...detail, range: rangeMeta(days), trackerAvailable };
@@ -109,9 +109,9 @@ export async function buildDailyReport(
   days = 7,
   personId?: number,
 ): Promise<DailyReport> {
-  const { rows, trackerAvailable } = getRangeRows(days, personId);
+  const { rows, trackerAvailable } = await getRangeRows(days, personId);
   const categorized = rowsToCategorized(rows);
-  const clients = listClients();
+  const clients = await listClients();
   return {
     rows: buildDailyTotals(categorized, clients),
     range: rangeMeta(days),
@@ -125,9 +125,9 @@ export async function buildClientDay(
   day: string,
   personId?: number,
 ): Promise<ClientReport | null> {
-  const client = listClients().find((c) => c.id === clientId);
+  const client = (await listClients()).find((c) => c.id === clientId);
   if (!client) return null;
-  const { rows, trackerAvailable } = ensureDayRows(day, personId);
+  const { rows, trackerAvailable } = await ensureDayRows(day, personId);
   const categorized = rowsToCategorized(rows);
   const detail = buildClientDetail(categorized, client);
   return {

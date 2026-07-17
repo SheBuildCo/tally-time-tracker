@@ -8,7 +8,7 @@ export async function DELETE(
   { params }: { params: { id: string } },
 ) {
   try {
-    return NextResponse.json(removePerson(Number(params.id)));
+    return NextResponse.json(await removePerson(Number(params.id)));
   } catch (err) {
     if (err instanceof ValidationError) {
       return NextResponse.json({ error: err.message }, { status: 400 });

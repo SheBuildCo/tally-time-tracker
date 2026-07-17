@@ -91,9 +91,9 @@ For each item return:
 
 Be conservative: when unsure, set suggestedClientName to null and a low confidence. Billing accuracy matters more than coverage.`;
 
-function resolveApiKey(): string | null {
+async function resolveApiKey(): Promise<string | null> {
   try {
-    const fromSettings = getSetting("anthropic_api_key");
+    const fromSettings = await getSetting("anthropic_api_key");
     if (fromSettings && fromSettings.trim()) return fromSettings.trim();
   } catch {
     // DB not available (e.g. before migrate) — fall through to env.
@@ -192,7 +192,7 @@ export async function enrichDistinct(
   ctx: EnrichContext,
 ): Promise<EnrichedItem[]> {
   if (inputs.length === 0) return [];
-  const apiKey = resolveApiKey();
+  const apiKey = await resolveApiKey();
   if (!apiKey) return []; // not configured — never construct the client
 
   const capped = inputs.slice(0, MAX_ITEMS);

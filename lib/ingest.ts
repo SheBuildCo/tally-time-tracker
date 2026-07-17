@@ -100,15 +100,15 @@ export function rowsToCategorized(rows: DailyActivityRow[]): Categorized[] {
  * Ingest a push: persist a person's raw events for a day (the source), then
  * categorize with the shared rules, roll up and store. Returns the stored rows.
  */
-export function ingestPushedEvents(
+export async function ingestPushedEvents(
   personId: number,
   day: string,
   events: UsageEvent[],
-): DailyActivityRow[] {
-  storePushedEvents(personId, day, JSON.stringify(events), new Date().toISOString());
-  const categorized = categorizeAll(events, listRules());
+): Promise<DailyActivityRow[]> {
+  await storePushedEvents(personId, day, JSON.stringify(events), new Date().toISOString());
+  const categorized = categorizeAll(events, await listRules());
   const rows = rollup(personId, categorized);
-  replaceDayActivity(personId, day, rows);
+  await replaceDayActivity(personId, day, rows);
   return rows;
 }
 
@@ -123,15 +123,15 @@ export interface RangeIngest {
  * always true here — the central server has no local AW of its own; capture
  * freshness is a per-machine concern surfaced elsewhere.
  */
-export function getRangeRows(days: number, personId?: number): RangeIngest {
+export async function getRangeRows(days: number, personId?: number): Promise<RangeIngest> {
   const wanted = dayStrings(days);
-  const rows = getActivityRows(wanted[0], wanted[wanted.length - 1], personId);
+  const rows = await getActivityRows(wanted[0], wanted[wanted.length - 1], personId);
   return { rows, trackerAvailable: true };
 }
 
 /** Stored rows for a single (possibly historical) day, optionally one person. */
-export function ensureDayRows(day: string, personId?: number): RangeIngest {
-  return { rows: getActivityRows(day, day, personId), trackerAvailable: true };
+export async function ensureDayRows(day: string, personId?: number): Promise<RangeIngest> {
+  return { rows: await getActivityRows(day, day, personId), trackerAvailable: true };
 }
 
 /**
@@ -139,19 +139,19 @@ export function ensureDayRows(day: string, personId?: number): RangeIngest {
  * (the recap person's "Re-sync with current rules"). Recomputes each affected
  * (person, day) rollup from the persisted source — no local AW needed.
  */
-export function resyncRange(days: number): RangeIngest {
+export async function resyncRange(days: number): Promise<RangeIngest> {
   const wanted = dayStrings(days);
   const start = wanted[0];
   const end = wanted[wanted.length - 1];
-  const rules = listRules();
-  for (const { personId, day } of listPushedDays(start, end)) {
-    const json = getPushedEvents(personId, day);
+  const rules = await listRules();
+  for (const { personId, day } of await listPushedDays(start, end)) {
+    const json = await getPushedEvents(personId, day);
     if (!json) continue;
     const events = JSON.parse(json) as UsageEvent[];
     const categorized = categorizeAll(events, rules);
-    replaceDayActivity(personId, day, rollup(personId, categorized));
+    await replaceDayActivity(personId, day, rollup(personId, categorized));
   }
-  return { rows: getActivityRows(start, end), trackerAvailable: true };
+  return { rows: await getActivityRows(start, end), trackerAvailable: true };
 }
 
 // Re-exported so callers (and tests) can build labels consistently.

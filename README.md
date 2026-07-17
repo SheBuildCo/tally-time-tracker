@@ -24,58 +24,65 @@ reports.
 - **Local & persistent** — a local SQLite store keeps a per-day rollup of your
   tracked time, so history survives and is viewable even when the tracker isn't
   running. Data stays on your machine.
-- **Shared team view** — a central server collects everyone's time so you can
-  see team-wide totals per client and produce a weekly/monthly client recap.
-  Each machine runs only a tiny agent; viewing is just a URL, nothing to install.
+- **Shared team view** — everyone's time lives in one shared Supabase
+  (Postgres) database, so team-wide totals per client and a weekly/monthly
+  client recap are always up to date. Each machine runs only a tiny agent;
+  viewing is just a URL, nothing to install.
 
-> **Status:** shared team instance (central server + per-machine agents),
-> Windows machines. See [Roadmap](#roadmap) for what's deferred.
+> **Status:** shared team instance (Vercel-hosted app + Supabase Postgres +
+> per-machine agents), Windows machines. See [Roadmap](#roadmap) for what's
+> deferred.
 
 ## How it fits together
 
 ```
- Each employee machine                         One central server
+ Each employee machine                         Vercel (app) + Supabase (DB)
  ┌───────────────────────────┐  HTTPS POST     ┌──────────────────────────────────┐
  │ ActivityWatch (localhost) │   /api/ingest   │ lib/categorize  map → client      │
  │ Tally agent (npm run agent)│ ─(token)──────▶ │ lib/ingest      rollup per person │
  │  reads local AW, pushes    │                 │ lib/analytics   aggregate (team)  │
- └───────────────────────────┘                 │ UI (React) ◀─ REST ─ SQLite       │
+ └───────────────────────────┘                 │ UI (React) ◀─ REST ─ Postgres     │
                                                 └──────────────────────────────────┘
 ```
 
 Tally **only reads** from ActivityWatch — never writes tracking data. Each
-machine's agent pushes its raw events to the server, which stores them per
-person, categorizes against the shared rules, and rolls up per-person totals.
-See [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md) for the full shape and setup.
+machine's agent pushes its raw events to the app (deployed on Vercel, or a
+developer's own `npm run dev`), which stores them per person in Supabase,
+categorizes against the shared rules, and rolls up per-person totals. Local dev
+and the deployed app point at the **same Supabase project** (shared
+`DATABASE_URL`), so everyone reads/writes one shared database directly — no
+VPS to run or patch. See [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md) for the
+full shape and setup.
 
 ## Two ways to run it
 
 ### A. Developers — local dev
 ```bash
 npm install
-npm run dev        # http://localhost:3000
+DATABASE_URL=<shared Supabase connection string> npm run dev   # http://localhost:3000
 # in another terminal, push your own machine's ActivityWatch to it:
 TALLY_CENTRAL_URL=http://localhost:3000 TALLY_PERSON_TOKEN=<token> npm run agent
 ```
 Grab a token from **Settings → People → Add person** (or set `TALLY_PERSON_TOKEN`
 before first run to pin the seeded person's token). No build/executable step to
-test a change — pull the branch and run.
+test a change — pull the branch and run. Point `DATABASE_URL` at the shared
+team Supabase project (recommended — your local dev then shows real team
+data) or your own scratch Supabase project for isolated testing.
 
 ### B. Shared team deployment
-One central server behind a login, plus a `setup-autostart.ps1` per machine that
-registers a logon task running `npm run agent` — see
-[`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md).
+The app is deployed once to Vercel (env vars `DATABASE_URL`, optionally
+`ANTHROPIC_API_KEY`), plus a `setup-autostart.ps1` per machine that registers a
+logon task running `npm run agent` — see [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md).
 
 ## Configuration
 
-Environment variables (all optional):
+Environment variables:
 
-**Server** (the central instance):
+**Server** (Vercel deployment or local dev):
 
 | Variable            | Default                 | Purpose                                   |
 | ------------------- | ----------------------- | ----------------------------------------- |
-| `TALLY_DATA_DIR`    | `./data`                | Where the SQLite store lives              |
-| `TALLY_DB_PATH`     | `<data>/tally.db`       | Explicit SQLite file path (overrides dir) |
+| `DATABASE_URL`      | — (required)            | Supabase Postgres connection string       |
 | `ANTHROPIC_API_KEY` | — (optional)            | Shared key for AI title/site cleanup      |
 | `TALLY_PERSON_TOKEN`| — (optional)            | Pin the seeded default person's token (dev)|
 
@@ -94,10 +101,11 @@ Environment variables (all optional):
 | Command               | Description                                            |
 | --------------------- | ----------------------------------------------------- |
 | `npm run dev`         | Dashboard in the browser (server)                     |
-| `npm run build`       | Production build (for the central server)             |
+| `npm run build`       | Production build (for Vercel/`npm start`)              |
 | `npm start`           | Serve the production build                             |
 | `npm run agent`       | Push this machine's ActivityWatch to the server       |
 | `npm test`            | Unit tests (categorize, analytics, persistence)       |
+| `npm run migrate-to-supabase` | One-time: copy an existing local SQLite store into Supabase |
 
 ## Project layout
 
@@ -106,16 +114,17 @@ app/            Next.js App Router — pages (Overview, Clients, Daily, Activity
                 Settings) + REST API routes (incl. /api/ingest, /api/people)
 lib/            activitywatch (AW reads), categorize (rules + title labels),
                 analytics (aggregation), ingest (rollup + push source), db
-                (SQLite: people, clients, rules, per-person rollups, raw events),
-                report (orchestration), handlers (API business logic),
-                client (browser↔REST transport)
+                (Supabase/Postgres: people, clients, rules, per-person
+                rollups, raw events — schema.sql), report (orchestration),
+                handlers (API business logic), client (browser↔REST transport)
 components/     dashboard UI (Tremor + Tailwind, pastel design system in ui.tsx)
 scripts/        agent.ts (per-machine push agent), tally-start.ps1 (agent boot
-                wrapper), setup-autostart.ps1 (one-time provisioning) — see
+                wrapper), setup-autostart.ps1 (one-time provisioning),
+                migrate-sqlite-to-postgres.ts (one-time data migration) — see
                 docs/DEPLOYMENT.md
 __tests__/      unit tests with AW event fixtures
 docs/SETUP.md   ActivityWatch install + browser extension + Comet notes
-docs/DEPLOYMENT.md  shared team deployment (central server + machine agents)
+docs/DEPLOYMENT.md  shared team deployment (Vercel + Supabase + machine agents)
 ```
 
 ## Roadmap

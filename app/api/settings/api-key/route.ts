@@ -8,7 +8,7 @@ export const dynamic = "force-dynamic";
 export async function POST(request: Request) {
   try {
     const body = (await request.json().catch(() => ({}))) as { value?: unknown };
-    return NextResponse.json(setApiKey(body.value));
+    return NextResponse.json(await setApiKey(body.value));
   } catch (err) {
     const status = err instanceof ValidationError ? 400 : 500;
     return NextResponse.json(

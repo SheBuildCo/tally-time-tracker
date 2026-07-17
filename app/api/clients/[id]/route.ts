@@ -14,7 +14,7 @@ export async function PATCH(
 ) {
   const body = await request.json().catch(() => ({}));
   try {
-    return NextResponse.json(patchClient(Number(params.id), body));
+    return NextResponse.json(await patchClient(Number(params.id), body));
   } catch (err) {
     if (err instanceof ValidationError) {
       return NextResponse.json({ error: err.message }, { status: 400 });
@@ -31,7 +31,7 @@ export async function DELETE(
   { params }: { params: { id: string } },
 ) {
   try {
-    return NextResponse.json(removeClient(Number(params.id)));
+    return NextResponse.json(await removeClient(Number(params.id)));
   } catch (err) {
     if (err instanceof ValidationError) {
       return NextResponse.json({ error: err.message }, { status: 400 });
