@@ -10,7 +10,9 @@ import type {
   SessionExclusion,
   RangeSummary,
   Settings,
-  ReportHistoryEntry
+  ReportHistoryEntry,
+  TeamStatus,
+  TeamSummary
 } from '@shared/types'
 
 const invoke = <T>(channel: string, ...args: unknown[]): Promise<T> =>
@@ -63,9 +65,25 @@ export const api = {
   getReportTemplate: () => invoke<string>('reports:getTemplate'),
   saveReportTemplate: (html: string) => invoke<void>('reports:saveTemplate', html),
 
+  // Team sync (shared database)
+  teamStatus: () => invoke<TeamStatus>('team:status'),
+  teamSetup: (personName: string, url: string) =>
+    invoke<{ configured: boolean }>('team:setup', personName, url),
+  teamTest: (url?: string) => invoke<{ ok: boolean; message: string }>('team:test', url),
+  teamSync: () => invoke<SyncResult>('team:sync'),
+  teamSummary: (days: number) => invoke<TeamSummary>('team:summary', days),
+
   // ActivityWatch
   awHealth: () => invoke<boolean>('aw:health'),
 
   // Push subscription
   onTimerState: (cb: (state: TimerState) => void) => window.tally.onTimerState(cb)
+}
+
+// Mirrors the main process's SyncResult (src/main/sync.ts) — kept structural to
+// avoid the renderer importing from main.
+export interface SyncResult {
+  ok: boolean
+  message: string
+  at: string
 }

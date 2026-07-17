@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import type { Settings as SettingsModel } from '@shared/types'
+import type { Settings as SettingsModel, TeamStatus } from '@shared/types'
 import { api } from '../api'
 import { formatDate } from '../format'
 
@@ -51,6 +51,167 @@ function ShortcutInput({
     >
       {capturing ? 'Press keys…' : value}
     </button>
+  )
+}
+
+// Team sync setup: who this machine reports as, and where the shared database
+// lives. The connection string is a shared secret — it's stored locally (not in
+// the build) so it can be rotated without shipping a new installer.
+function TeamSyncSection(): React.JSX.Element {
+  const [status, setStatus] = useState<TeamStatus | null>(null)
+  const [person, setPerson] = useState('')
+  const [url, setUrl] = useState('')
+  const [busy, setBusy] = useState<'test' | 'save' | 'sync' | null>(null)
+  const [result, setResult] = useState<{ ok: boolean; message: string } | null>(null)
+
+  useEffect(() => {
+    api.teamStatus().then((s) => {
+      setStatus(s)
+      setPerson(s.personName ?? '')
+    })
+  }, [])
+
+  async function test(): Promise<void> {
+    setBusy('test')
+    setResult(null)
+    try {
+      // Test what's typed if the field has a value; otherwise the stored one.
+      setResult(await api.teamTest(url.trim() || undefined))
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  async function save(): Promise<void> {
+    setBusy('save')
+    setResult(null)
+    try {
+      if (!person.trim()) {
+        setResult({ ok: false, message: 'Your name is required — it identifies your time.' })
+        return
+      }
+      const check = await api.teamTest(url.trim() || undefined)
+      if (!check.ok) {
+        setResult(check) // don't save a connection string that doesn't work
+        return
+      }
+      await api.teamSetup(person.trim(), url.trim() || '')
+      setStatus(await api.teamStatus())
+      setUrl('') // don't keep the secret in component state once stored
+      setResult({ ok: true, message: 'Saved. Your time will sync every few minutes.' })
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  async function syncNow(): Promise<void> {
+    setBusy('sync')
+    setResult(null)
+    try {
+      const r = await api.teamSync()
+      setResult(r)
+      setStatus(await api.teamStatus())
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  const configured = status?.configured ?? false
+
+  return (
+    <section className="rounded-lg border border-slate-200 bg-white p-4">
+      <div className="mb-1 flex items-center justify-between">
+        <h2 className="font-medium">Team sync</h2>
+        <span
+          className={`rounded-full px-2 py-0.5 text-xs ${
+            configured ? 'bg-emerald-50 text-emerald-700' : 'bg-slate-100 text-slate-600'
+          }`}
+        >
+          {configured ? 'Connected' : 'Not set up'}
+        </span>
+      </div>
+      <p className="mb-4 text-xs text-slate-500">
+        Pushes your tracked time to the shared team database so everyone’s hours appear in one
+        place. Tally keeps recording locally either way — if this is off or offline, nothing is
+        lost, it just catches up later.
+      </p>
+
+      <div className="space-y-3">
+        <div>
+          <label className="mb-1 block text-sm font-medium">Your name</label>
+          <input
+            value={person}
+            onChange={(e) => setPerson(e.target.value)}
+            placeholder="e.g. Oli"
+            className="w-full rounded-md border border-slate-300 px-3 py-1.5 text-sm"
+          />
+          <p className="mt-1 text-xs text-slate-500">
+            How your time is labelled for the team. Use the same name every time.
+          </p>
+        </div>
+
+        <div>
+          <label className="mb-1 block text-sm font-medium">
+            Database connection string {status?.hasUrl && !url && (
+              <span className="font-normal text-slate-500">— saved, leave blank to keep</span>
+            )}
+          </label>
+          <input
+            value={url}
+            onChange={(e) => setUrl(e.target.value)}
+            type="password"
+            placeholder={status?.hasUrl ? '••••••••••••••••' : 'postgresql://postgres:…@db.….supabase.co:5432/postgres'}
+            className="w-full rounded-md border border-slate-300 px-3 py-1.5 font-mono text-xs"
+          />
+          <p className="mt-1 text-xs text-slate-500">
+            Treat this like a shared password — anyone with it can read and change the team’s data.
+          </p>
+        </div>
+
+        {result && (
+          <p
+            className={`rounded-md px-3 py-2 text-xs ${
+              result.ok ? 'bg-emerald-50 text-emerald-800' : 'bg-amber-50 text-amber-900'
+            }`}
+          >
+            {result.message}
+          </p>
+        )}
+
+        <div className="flex items-center gap-2">
+          <button
+            onClick={save}
+            disabled={busy !== null}
+            className="rounded-md bg-slate-900 px-3 py-1.5 text-sm text-white disabled:opacity-50"
+          >
+            {busy === 'save' ? 'Saving…' : 'Save'}
+          </button>
+          <button
+            onClick={test}
+            disabled={busy !== null}
+            className="rounded-md border border-slate-300 px-3 py-1.5 text-sm disabled:opacity-50"
+          >
+            {busy === 'test' ? 'Testing…' : 'Test connection'}
+          </button>
+          {configured && (
+            <button
+              onClick={syncNow}
+              disabled={busy !== null}
+              className="rounded-md border border-slate-300 px-3 py-1.5 text-sm disabled:opacity-50"
+            >
+              {busy === 'sync' ? 'Syncing…' : 'Sync now'}
+            </button>
+          )}
+        </div>
+
+        {status?.lastSync && (
+          <p className="text-xs text-slate-500">
+            Last sync: {status.lastSync.ok ? '' : 'failed — '}
+            {status.lastSync.message} ({formatDate(status.lastSync.at)})
+          </p>
+        )}
+      </div>
+    </section>
   )
 }
 
@@ -118,6 +279,8 @@ export function Settings(): React.JSX.Element {
           </div>
         </div>
       </section>
+
+      <TeamSyncSection />
 
       <section className="rounded-lg border border-slate-200 bg-white p-4">
         <h2 className="mb-4 font-medium">Startup</h2>

@@ -8,3 +8,15 @@ data
 *.db
 *.db-shm
 *.db-wal
+
+# Local secrets — the shared database connection string holds a password.
+# The app reads it from Settings (app_settings), never from the repo; this is
+# only for maintenance scripts under scripts/.
+.env
+.env.local
+.env*.local
+
+# Build artefacts from tooling that isn't this app's (stale checkouts).
+.next/
+next-env.d.ts
+tsconfig.tsbuildinfo

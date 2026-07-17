@@ -107,6 +107,37 @@ export interface RangeSummary {
   daily: DailyTotal[]
 }
 
+// ---- Team view (shared database) ----
+
+// One teammate's slice of the team summary.
+export interface TeamMemberSummary {
+  person: string
+  seconds: number
+  billableSeconds: number
+  amount: number
+  clients: ClientSummary[]
+}
+
+// Mirrors RangeSummary (same clients/daily shape, so the dashboard's existing
+// components render it unchanged) plus the per-person breakdown that only makes
+// sense team-wide.
+export interface TeamSummary {
+  days: number
+  totalSeconds: number
+  billableSeconds: number
+  people: TeamMemberSummary[]
+  clients: ClientSummary[]
+  daily: DailyTotal[]
+}
+
+// Team sync configuration + last-run status, surfaced in Settings.
+export interface TeamStatus {
+  configured: boolean
+  personName: string | null
+  hasUrl: boolean
+  lastSync: { ok: boolean; message: string; at: string } | null
+}
+
 // Activity row shown in the session detail view, annotated with whether the
 // user has excluded it from the session.
 export interface SessionActivity {

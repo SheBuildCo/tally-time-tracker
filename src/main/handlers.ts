@@ -10,7 +10,16 @@ import { getRangeRows, getSessionActivities, invalidateSession } from './ingest'
 import { buildRangeSummary } from './analytics'
 import { isAvailable } from './activitywatch'
 import { generateReport } from './reports'
-import type { Client, MappingRule, Settings } from '../shared/types'
+import { fetchTeamSummary, getLastSyncResult, syncNow } from './sync'
+import {
+  PERSON_NAME_KEY,
+  SUPABASE_URL_KEY,
+  getPersonName,
+  getSupabaseUrl,
+  isConfigured,
+  testConnection
+} from './supabase'
+import type { Client, MappingRule, Settings, TeamStatus } from '../shared/types'
 
 // Side-effecting capabilities the handlers need but that live in main/index or
 // other modules. Injected to avoid circular imports.
@@ -99,6 +108,23 @@ export function registerHandlers(ctx: HandlerContext): void {
     'reports:getTemplate': () => db.getSetting('report_template_html'),
     'reports:saveTemplate': (html: string) => db.setSetting('report_template_html', html),
 
+    // Team sync (shared Supabase database). Every one of these is safe to call
+    // when team sync isn't configured — the UI stays usable either way.
+    'team:status': (): TeamStatus => ({
+      configured: isConfigured(),
+      personName: getPersonName(),
+      hasUrl: !!getSupabaseUrl(),
+      lastSync: getLastSyncResult()
+    }),
+    'team:setup': (personName: string, url: string) => {
+      db.setSetting(PERSON_NAME_KEY, personName.trim())
+      db.setSetting(SUPABASE_URL_KEY, url.trim())
+      return { configured: isConfigured() }
+    },
+    'team:test': (url?: string) => testConnection(url),
+    'team:sync': () => syncNow(),
+    'team:summary': (days: number) => fetchTeamSummary(days),
+
     // ActivityWatch
     'aw:health': () => isAvailable()
   }
@@ -137,5 +163,10 @@ export const CHANNELS = [
   'reports:history',
   'reports:openFile',
   'reports:getTemplate',
-  'reports:saveTemplate'
+  'reports:saveTemplate',
+  'team:status',
+  'team:setup',
+  'team:test',
+  'team:sync',
+  'team:summary'
 ] as const

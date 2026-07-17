@@ -6,6 +6,13 @@ import { registerHandlers } from './handlers'
 import { registerShortcuts, unregisterShortcuts } from './shortcuts'
 import { createTray, destroyTray } from './tray'
 import { createMainWindow, showMainWindow, openPicker, closePicker } from './windows'
+import { syncNow } from './sync'
+import { disconnect } from './supabase'
+
+// How often each machine pushes its time to the shared team database. Generous
+// on purpose: the data is a daily rollup, so minute-level freshness buys
+// nothing, and this runs on every teammate's machine against one small database.
+const SYNC_INTERVAL_MS = 5 * 60 * 1000
 
 // Single-instance lock: a second launch just focuses the running app.
 const gotLock = app.requestSingleInstanceLock()
@@ -18,6 +25,15 @@ if (!gotLock) {
   const startHidden = process.argv.includes('--hidden')
 
   let quitting = false
+  let syncTimer: NodeJS.Timeout | null = null
+
+  // Push to the shared team database in the background. No-ops when team sync
+  // isn't configured, and syncNow() never throws — tracking must never depend
+  // on the network being up.
+  function startTeamSync(): void {
+    void syncNow()
+    syncTimer = setInterval(() => void syncNow(), SYNC_INTERVAL_MS)
+  }
 
   function setAutoLaunch(enabled: boolean): void {
     app.setLoginItemSettings({
@@ -49,6 +65,7 @@ if (!gotLock) {
     })
 
     createMainWindow(startHidden)
+    startTeamSync()
 
     app.on('activate', () => {
       if (BrowserWindow.getAllWindows().length === 0) createMainWindow(false)
@@ -69,6 +86,8 @@ if (!gotLock) {
   app.on('will-quit', () => {
     unregisterShortcuts()
     destroyTray()
+    if (syncTimer) clearInterval(syncTimer)
+    void disconnect()
   })
 
   // Expose for potential future use / clarity.
