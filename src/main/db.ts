@@ -149,22 +149,7 @@ function migrate(): void {
   if (!getSetting('tracking_started_at')) {
     setSetting('tracking_started_at', new Date().toISOString())
   }
-
-  // Seed a starter report template so the Reports page isn't empty on first
-  // use. This is the exact HTML shape TipTap's mergeField/mergeFieldBlock
-  // nodes emit, so it round-trips cleanly when loaded into the editor.
-  if (!getSetting('report_template_html')) {
-    setSetting('report_template_html', DEFAULT_REPORT_TEMPLATE_HTML)
-  }
 }
-
-const DEFAULT_REPORT_TEMPLATE_HTML = `
-<h2>Work Summary</h2>
-<p><span data-merge-field="client_name" contenteditable="false">[Client Name]</span> — <span data-merge-field="date_range" contenteditable="false">[Date Range]</span></p>
-<p>Please find a summary of work completed below.</p>
-<div data-merge-field="sessions_table" contenteditable="false">[Sessions Table]</div>
-<p>Generated <span data-merge-field="generated_date" contenteditable="false">[Generated Date]</span></p>
-`.trim()
 
 function seedIfEmpty(): void {
   const count = db.prepare('SELECT COUNT(*) AS n FROM clients').get() as { n: number }
@@ -375,7 +360,10 @@ function rowToSession(r: any): TimerSession {
     startTime: r.start_time,
     endTime: r.end_time,
     notes: r.notes,
-    createdAt: r.created_at
+    createdAt: r.created_at,
+    // Present only when the query selected it (listSessions); left undefined
+    // otherwise so callers that don't need it pay nothing.
+    activeSeconds: r.active_seconds != null ? r.active_seconds : undefined
   }
 }
 
@@ -391,14 +379,34 @@ export function endSession(id: number, endTime: string): TimerSession | null {
   return getSession(id)
 }
 
+// Permanently delete a session. Its snapshot and exclusions go with it via
+// ON DELETE CASCADE (foreign_keys pragma is on). Used to drop a session that
+// isn't worth billing so it never appears in a report.
+export function deleteSession(id: number): void {
+  db.prepare('DELETE FROM timer_sessions WHERE id = ?').run(id)
+}
+
 export function getSession(id: number): TimerSession | null {
   const r = db.prepare('SELECT * FROM timer_sessions WHERE id = ?').get(id) as any
   return r ? rowToSession(r) : null
 }
 
 export function listSessions(limit = 100): TimerSession[] {
+  // active_seconds = the session's real worked time (sum of its snapshot), so
+  // the list shows active time rather than wall-clock end−start (which balloons
+  // for a forgotten timer). Completed sessions have a snapshot; a running one
+  // has none yet (COALESCE → 0), and the UI shows its live elapsed instead.
   const rows = db
-    .prepare('SELECT * FROM timer_sessions ORDER BY start_time DESC LIMIT ?')
+    .prepare(
+      `SELECT ts.*,
+              COALESCE(
+                (SELECT SUM(seconds) FROM session_activity_snapshot WHERE session_id = ts.id),
+                0
+              ) AS active_seconds
+       FROM timer_sessions ts
+       ORDER BY start_time DESC
+       LIMIT ?`
+    )
     .all(limit) as any[]
   return rows.map(rowToSession)
 }
@@ -529,7 +537,6 @@ function rowToReportHistoryEntry(r: any): ReportHistoryEntry {
     clientId: r.client_id,
     startDate: r.start_date,
     endDate: r.end_date,
-    pdfPath: r.pdf_path,
     csvPath: r.csv_path,
     createdAt: r.created_at
   }
@@ -539,15 +546,16 @@ export function createReportHistoryEntry(input: {
   clientId: number
   startDate: string
   endDate: string
-  pdfPath: string
   csvPath: string
 }): ReportHistoryEntry {
+  // pdf_path is a legacy NOT NULL column (PDF output was removed). SQLite has no
+  // ALTER-drop migration here, so we keep the column and write an empty string.
   const info = db
     .prepare(
       `INSERT INTO report_history (client_id, start_date, end_date, pdf_path, csv_path)
-       VALUES (?, ?, ?, ?, ?)`
+       VALUES (?, ?, ?, '', ?)`
     )
-    .run(input.clientId, input.startDate, input.endDate, input.pdfPath, input.csvPath)
+    .run(input.clientId, input.startDate, input.endDate, input.csvPath)
   return getReportHistoryEntry(info.lastInsertRowid as number)!
 }
 

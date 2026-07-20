@@ -52,6 +52,11 @@ export function connect(): postgres.Sql | null {
     max: 2,
     idle_timeout: 20,
     connect_timeout: 15,
+    // Disable prepared statements so the connection-POOLER string works in
+    // either mode. Teammates must use the pooler (IPv4) string, not the direct
+    // db.<ref>.supabase.co one, which is IPv6-only and unreachable on most
+    // networks; the transaction pooler additionally rejects prepared statements.
+    prepare: false,
     onnotice: () => {}
   })
   return sql
@@ -82,7 +87,13 @@ export async function testConnection(url?: string): Promise<ConnectionCheck> {
 
   let probe: postgres.Sql | null = null
   try {
-    probe = postgres(target, { ssl: 'require', max: 1, connect_timeout: 15, onnotice: () => {} })
+    probe = postgres(target, {
+      ssl: 'require',
+      max: 1,
+      connect_timeout: 15,
+      prepare: false,
+      onnotice: () => {}
+    })
     const [row] = await probe`SELECT COUNT(*)::int AS n FROM people`
     return { ok: true, message: `Connected. ${row.n} ${row.n === 1 ? 'person' : 'people'} in the shared database.` }
   } catch (err) {
@@ -104,13 +115,18 @@ export function friendlyError(err: unknown): string {
       return 'Connected, but the tables are missing. Apply supabase/schema.sql first.'
     case 'ENOTFOUND':
     case 'EAI_AGAIN':
-      return 'Cannot reach the database host — check the URL and your internet connection.'
     case 'ECONNREFUSED':
-      return 'Connection refused by the database host.'
     case 'CONNECT_TIMEOUT':
     case 'ETIMEDOUT':
-      return 'Timed out reaching the database.'
+      return (
+        'Cannot reach the database. Use the connection POOLER string ' +
+        '(Supabase → Connect → “Session pooler”: postgres.<ref>@…pooler.supabase.com:5432), ' +
+        'not the direct db.<ref>.supabase.co one — the direct host is IPv6-only and unreachable ' +
+        'on most networks. Also check your internet connection.'
+      )
     default:
+      // Supavisor returns XX000 "Tenant or user not found" when the pooler
+      // region in the string is wrong — surface the raw message so it's visible.
       return e.message ?? String(err)
   }
 }

@@ -43,15 +43,14 @@ CREATE TABLE IF NOT EXISTS rules (
 
 -- Per-day rollup of tracked activity, per person.
 --
--- NOTE ON client_id: locally this column is nullable ("time not attributed to
--- any client" — the majority of rows, since only manual-timer windows
--- attribute). Postgres forbids NULL in a primary key, so the shared copy uses
--- -1 as the "no client" sentinel. Anything reading this table must map -1 back
--- to null. person_id leads the key so two people's identical day never collide.
+-- Every row is attributed to a real client: Tally only tracks time booked to a
+-- client (via a timer session or a rule), and unassigned time is dropped at
+-- rollup, never stored or synced. person_id leads the key so two people's
+-- identical day never collide.
 CREATE TABLE IF NOT EXISTS daily_activity (
   person_id  INTEGER NOT NULL REFERENCES people(id) ON DELETE CASCADE,
   day        TEXT NOT NULL,
-  client_id  INTEGER NOT NULL DEFAULT -1,   -- -1 = no client (local NULL)
+  client_id  INTEGER NOT NULL REFERENCES clients(id) ON DELETE CASCADE,
   app        TEXT NOT NULL,
   activity   TEXT NOT NULL,
   host       TEXT NOT NULL DEFAULT '',

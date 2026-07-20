@@ -16,9 +16,11 @@ export default defineConfig({
     build: {
       rollupOptions: {
         input: {
-          // Two renderer entries: the main app and the transient client picker.
+          // Renderer entries: the main app, the transient client picker, and
+          // the always-on-top pinned timer widget.
           index: resolve('src/renderer/index.html'),
-          picker: resolve('src/renderer/picker.html')
+          picker: resolve('src/renderer/picker.html'),
+          pinned: resolve('src/renderer/pinned.html')
         }
       }
     }

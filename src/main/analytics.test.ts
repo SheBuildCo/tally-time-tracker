@@ -1,11 +1,12 @@
 import { describe, it, expect } from 'vitest'
-import { applySessionOverrides, rollup, buildRangeSummary } from './analytics'
+import { applySessionOverrides, rollup, buildRangeSummary, sessionActiveSeconds } from './analytics'
 import { categorizeAll } from './categorize'
 import type {
   UsageEvent,
   MappingRule,
   TimerSession,
   SessionExclusion,
+  SessionActivity,
   Client
 } from '../shared/types'
 
@@ -122,14 +123,49 @@ describe('applySessionOverrides', () => {
 
 describe('rollup', () => {
   it('aggregates seconds by client/app/activity/host', () => {
+    const rules: MappingRule[] = [
+      { id: 1, match: { app: 'code.exe' }, clientId: 1, billable: true, priority: 10 }
+    ]
     const events = [
       evt({ timestamp: '2026-07-08T10:00:00.000Z', duration: 100, app: 'code.exe', title: 'main.ts' }),
       evt({ timestamp: '2026-07-08T10:05:00.000Z', duration: 50, app: 'code.exe', title: 'main.ts' })
     ]
-    const categorized = categorizeAll(events, [])
+    const categorized = categorizeAll(events, rules)
     const rows = rollup(categorized, '2026-07-08')
     expect(rows).toHaveLength(1)
     expect(rows[0].seconds).toBe(150)
+    expect(rows[0].clientId).toBe(1)
+  })
+
+  it('drops unassigned time — a row with no client is never produced', () => {
+    const events = [
+      evt({ timestamp: '2026-07-08T10:00:00.000Z', duration: 100, app: 'code.exe', title: 'main.ts' })
+    ]
+    const categorized = categorizeAll(events, []) // no rules → null client
+    expect(rollup(categorized, '2026-07-08')).toHaveLength(0)
+  })
+})
+
+describe('sessionActiveSeconds', () => {
+  const act = (seconds: number, excluded = false): SessionActivity => ({
+    app: 'x',
+    host: '',
+    activity: 'a',
+    seconds,
+    excluded,
+    exclusionId: excluded ? 1 : null
+  })
+
+  it('sums non-excluded activity seconds', () => {
+    expect(sessionActiveSeconds([act(300), act(600)])).toBe(900)
+  })
+
+  it('ignores excluded activities', () => {
+    expect(sessionActiveSeconds([act(300), act(600, true)])).toBe(300)
+  })
+
+  it('is zero for no activities', () => {
+    expect(sessionActiveSeconds([])).toBe(0)
   })
 })
 

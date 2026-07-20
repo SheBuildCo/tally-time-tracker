@@ -44,6 +44,59 @@ export async function isAvailable(): Promise<boolean> {
   }
 }
 
+export interface AwHealth {
+  available: boolean // AW server reachable
+  windowWatcher: boolean // aw-watcher-window present (needed for any tracking)
+  afkWatcher: boolean // aw-watcher-afk present (needed to exclude idle time)
+}
+
+// Health of the local AW install. The afkWatcher flag matters because without
+// it fetchEvents falls back to raw wall-clock window time (no idle filtering),
+// which is how durations balloon — the UI warns when it's missing.
+export async function getHealth(): Promise<AwHealth> {
+  if (!(await isAvailable())) {
+    return { available: false, windowWatcher: false, afkWatcher: false }
+  }
+  try {
+    const ids = Object.keys(await getBuckets())
+    return {
+      available: true,
+      windowWatcher: ids.some((id) => id.startsWith('aw-watcher-window_')),
+      afkWatcher: ids.some((id) => id.startsWith('aw-watcher-afk_'))
+    }
+  } catch {
+    return { available: true, windowWatcher: false, afkWatcher: false }
+  }
+}
+
+// The instant the user was last active (end of the most recent not-afk period)
+// at or after `sinceISO`, per AW's AFK watcher. null when it can't be
+// determined — AW down, no AFK watcher, or no activity in the window — in which
+// case callers must not treat the user as idle. Used to auto-stop a forgotten
+// timer and back-date its end to when work actually stopped.
+export async function getLastActiveAt(sinceISO: string): Promise<Date | null> {
+  if (!(await isAvailable())) return null
+  try {
+    const afkBucket = Object.keys(await getBuckets()).find((id) =>
+      id.startsWith('aw-watcher-afk_')
+    )
+    if (!afkBucket) return null
+    const timeperiod = `${sinceISO}/${new Date().toISOString()}`
+    const events = await runQuery(timeperiod, [
+      `afk = flood(query_bucket("${afkBucket}"));`,
+      `RETURN = filter_keyvals(afk, "status", ["not-afk"]);`
+    ])
+    let last = 0
+    for (const e of events) {
+      const end = Date.parse(e.timestamp) + e.duration * 1000
+      if (end > last) last = end
+    }
+    return last > 0 ? new Date(last) : null
+  } catch {
+    return null
+  }
+}
+
 async function getBuckets(): Promise<Record<string, AwBucket>> {
   const res = await fetch(`${AW_BASE}/api/0/buckets/`)
   if (!res.ok) throw new Error(`AW buckets request failed: ${res.status}`)

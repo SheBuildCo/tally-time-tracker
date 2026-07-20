@@ -1,15 +1,18 @@
 // Client work-summary report generation: aggregates a client's tracked
-// sessions over a date range into a PDF (built from the user's rich-text
-// template) and a raw CSV. Sessions — not the rule-based daily_activity
-// rollup — are the source of truth here: only time the user explicitly
-// tracked for a client via the manual timer belongs in a report.
+// sessions over a date range into a clean CSV. Sessions — not the rule-based
+// daily_activity rollup — are the source of truth here: only time the user
+// explicitly tracked for a client via the manual timer belongs in a report.
+//
+// The CSV is the sole output: our monthly process is CSV -> Claude -> Canva, so
+// the file must be readable by someone with no context. One row per session,
+// all times in the machine's local timezone, a single decimal-hours duration.
 
-import { BrowserWindow } from 'electron'
 import { join } from 'path'
 import { mkdirSync, writeFileSync } from 'fs'
-import { parse } from 'node-html-parser'
 import type { TimerSession, SessionActivity, ReportHistoryEntry } from '../shared/types'
-import { formatDay, formatHoursMinutes, formatClock } from '../shared/format'
+import { formatDay, formatTimeOfDay, formatHoursDecimal } from '../shared/format'
+import { sessionActiveSeconds } from './analytics'
+import { fetchTeamSessions, type TeamSessionRow } from './sync'
 import * as db from './db'
 import { getSessionActivities } from './ingest'
 
@@ -21,6 +24,7 @@ export interface SessionWithActivities {
 export interface ReportData {
   clientId: number
   clientName: string
+  billableRate: number
   startDay: string // YYYY-MM-DD
   endDay: string // YYYY-MM-DD
   sessions: SessionWithActivities[]
@@ -49,6 +53,7 @@ export async function getReportData(
   return {
     clientId,
     clientName: client.name,
+    billableRate: client.billableRate,
     startDay,
     endDay,
     sessions: sessionsWithActivities
@@ -64,165 +69,65 @@ function csvEscape(value: string): string {
   return value
 }
 
-const CSV_HEADER = [
-  'Session Date',
-  'Session Start',
-  'Session End',
-  'App',
-  'Host',
-  'Activity',
-  'Duration (seconds)',
-  'Duration (H:MM:SS)'
-]
+const CSV_HEADER = ['Date', 'Client', 'Description', 'Start', 'End', 'Hours', 'Amount']
 
-// One row per non-excluded activity within each session. A session with no
-// remaining activities after exclusion contributes no rows.
+function formatAmount(hours: number, rate: number): string {
+  if (rate <= 0) return '' // non-billable client — leave blank rather than $0.00
+  return (hours * rate).toFixed(2)
+}
+
+// One row per completed session, in local time. Duration is the session's
+// active tracked time (sessionActiveSeconds), and Amount = Hours × rate so the
+// two columns reconcile for a reader. Sessions whose activities were all
+// excluded (zero active time) are skipped rather than shown as 0h rows.
 export function buildCsv(data: ReportData): string {
   const rows: string[] = [CSV_HEADER.join(',')]
 
   for (const { session, activities } of data.sessions) {
-    for (const activity of activities) {
-      const row = [
-        formatDay(session.startTime),
-        session.startTime,
-        session.endTime ?? '',
-        activity.app,
-        activity.host,
-        activity.activity,
-        String(Math.round(activity.seconds)),
-        formatClock(activity.seconds)
-      ].map(csvEscape)
-      rows.push(row.join(','))
-    }
+    const seconds = sessionActiveSeconds(activities)
+    if (seconds <= 0) continue
+    const hours = Number(formatHoursDecimal(seconds))
+    const row = [
+      formatDay(session.startTime),
+      data.clientName,
+      session.notes ?? '',
+      formatTimeOfDay(session.startTime),
+      session.endTime ? formatTimeOfDay(session.endTime) : '',
+      hours.toFixed(2),
+      formatAmount(hours, data.billableRate)
+    ].map(csvEscape)
+    rows.push(row.join(','))
   }
 
   // UTF-8 BOM so Excel on Windows doesn't mis-decode non-ASCII names.
   return '﻿' + rows.join('\r\n')
 }
 
-// ---- Merge-field substitution ----
-//
-// The template editor (TipTap) only ever produces structurally well-defined
-// `[data-merge-field]` elements — never free-form text a user typed — so
-// substitution is a DOM-attribute-driven replace, not a regex pass over raw
-// HTML. This avoids false-positive replacements inside user-authored prose.
+// ---- Team CSV (from the shared DB) ----
 
-function escapeHtml(s: string): string {
-  return s
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#39;')
-}
+const TEAM_CSV_HEADER = ['Date', 'Person', 'Client', 'Description', 'Start', 'End', 'Hours', 'Amount']
 
-function sessionDurationSeconds(session: TimerSession): number {
-  if (!session.endTime) return 0
-  return (Date.parse(session.endTime) - Date.parse(session.startTime)) / 1000
-}
-
-function renderSessionsTableHtml(data: ReportData): string {
-  const rows = data.sessions
-    .map(({ session }) => {
-      return `<tr>
-        <td>${escapeHtml(formatDay(session.startTime))}</td>
-        <td>${escapeHtml(formatHoursMinutes(sessionDurationSeconds(session)))}</td>
-        <td>${escapeHtml(data.clientName)}</td>
-      </tr>`
-    })
-    .join('')
-
-  if (data.sessions.length === 0) {
-    return `<table class="sessions-table"><thead><tr><th>Date</th><th>Duration</th><th>Client</th></tr></thead>
-      <tbody><tr><td colspan="3" class="empty">No sessions in this period.</td></tr></tbody></table>`
+// One row per session across the team (or one member), with a Person column.
+// Same shape as buildCsv otherwise: local times, active hours, Amount = Hours ×
+// rate. Rows come pre-computed from Supabase (fetchTeamSessions).
+export function buildTeamCsv(rows: TeamSessionRow[]): string {
+  const out: string[] = [TEAM_CSV_HEADER.join(',')]
+  for (const r of rows) {
+    if (r.activeSeconds <= 0) continue
+    const hours = Number(formatHoursDecimal(r.activeSeconds))
+    const line = [
+      formatDay(r.startTime),
+      r.person,
+      r.client,
+      r.notes ?? '',
+      formatTimeOfDay(r.startTime),
+      r.endTime ? formatTimeOfDay(r.endTime) : '',
+      hours.toFixed(2),
+      formatAmount(hours, r.billableRate)
+    ].map(csvEscape)
+    out.push(line.join(','))
   }
-
-  return `<table class="sessions-table">
-    <thead><tr><th>Date</th><th>Duration</th><th>Client</th></tr></thead>
-    <tbody>${rows}</tbody>
-  </table>`
-}
-
-function dateRangeLabel(startDay: string, endDay: string): string {
-  return `${formatDay(`${startDay}T00:00:00.000Z`)} – ${formatDay(`${endDay}T00:00:00.000Z`)}`
-}
-
-export function substituteMergeFields(templateHtml: string, data: ReportData): string {
-  const root = parse(templateHtml)
-
-  for (const el of root.querySelectorAll('[data-merge-field]')) {
-    const field = el.getAttribute('data-merge-field')
-    switch (field) {
-      case 'client_name':
-        el.replaceWith(escapeHtml(data.clientName))
-        break
-      case 'date_range':
-        el.replaceWith(escapeHtml(dateRangeLabel(data.startDay, data.endDay)))
-        break
-      case 'generated_date':
-        el.replaceWith(escapeHtml(formatDay(new Date().toISOString())))
-        break
-      case 'sessions_table':
-        el.replaceWith(renderSessionsTableHtml(data))
-        break
-      default:
-        // Unknown field key (e.g. from a stale template) — leave a visible
-        // placeholder rather than silently dropping content.
-        el.replaceWith(`[Unknown field: ${escapeHtml(field ?? '')}]`)
-    }
-  }
-
-  return root.toString()
-}
-
-// ---- PDF rendering ----
-
-const REPORT_PRINT_CSS = `
-  @page { margin: 20mm 16mm; }
-  body { font-family: -apple-system, 'Segoe UI', system-ui, sans-serif; color: #1e293b; font-size: 12pt; line-height: 1.5; }
-  h1, h2, h3 { color: #0f172a; margin-bottom: 0.4em; }
-  p { margin: 0.6em 0; }
-  table.sessions-table { width: 100%; border-collapse: collapse; margin: 1em 0; font-size: 11pt; }
-  table.sessions-table th, table.sessions-table td { border: 1px solid #cbd5e1; padding: 6px 10px; text-align: left; }
-  table.sessions-table th { background: #f1f5f9; font-weight: 600; }
-  table.sessions-table td.empty { text-align: center; color: #64748b; font-style: italic; }
-`
-
-function wrapReportDocument(bodyHtml: string): string {
-  return `<!doctype html>
-<html>
-  <head>
-    <meta charset="utf-8" />
-    <style>${REPORT_PRINT_CSS}</style>
-  </head>
-  <body>${bodyHtml}</body>
-</html>`
-}
-
-async function renderHtmlToPdf(html: string): Promise<Buffer> {
-  const win = new BrowserWindow({ show: false, webPreferences: { sandbox: true } })
-  try {
-    const loaded = new Promise<void>((resolve) => {
-      win.webContents.once('did-finish-load', () => resolve())
-    })
-    await win.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(html))
-    await loaded
-    const buffer = await win.webContents.printToPDF({
-      printBackground: true,
-      pageSize: 'A4',
-      margins: { marginType: 'default' }
-    })
-    return buffer
-  } finally {
-    win.destroy()
-  }
-}
-
-async function renderReportPdf(data: ReportData): Promise<Buffer> {
-  const templateHtml = db.getSetting('report_template_html') ?? ''
-  const mergedHtml = substituteMergeFields(templateHtml, data)
-  const fullDocument = wrapReportDocument(mergedHtml)
-  return renderHtmlToPdf(fullDocument)
+  return '﻿' + out.join('\r\n')
 }
 
 // ---- File output ----
@@ -237,36 +142,59 @@ function sanitizeForFilename(s: string): string {
   return s.replace(/[^a-z0-9]+/gi, '-').replace(/^-+|-+$/g, '') || 'report'
 }
 
-export function reportFilePaths(clientName: string, startDay: string, endDay: string): {
-  pdfPath: string
-  csvPath: string
-} {
-  const base = `${sanitizeForFilename(clientName)}_${startDay}_to_${endDay}_${Date.now()}`
-  const dir = reportsDir()
-  return { pdfPath: join(dir, `${base}.pdf`), csvPath: join(dir, `${base}.csv`) }
+export function reportFilePath(
+  clientName: string,
+  startDay: string,
+  endDay: string,
+  label?: string
+): string {
+  const who = label ? `${sanitizeForFilename(label)}_` : ''
+  const base = `${sanitizeForFilename(clientName)}_${who}${startDay}_to_${endDay}_${Date.now()}`
+  return join(reportsDir(), `${base}.csv`)
 }
 
-// Orchestrates a full report: aggregate session data, write the CSV, render
-// and write the PDF, then record the result in report_history.
+// Orchestrates a full report: aggregate session data, write the CSV, and record
+// the result in report_history.
 export async function generateReport(
   clientId: number,
   startDay: string,
   endDay: string
 ): Promise<ReportHistoryEntry> {
   const data = await getReportData(clientId, startDay, endDay)
-  const { pdfPath, csvPath } = reportFilePaths(data.clientName, startDay, endDay)
+  const csvPath = reportFilePath(data.clientName, startDay, endDay)
 
-  const csv = buildCsv(data)
-  writeFileSync(csvPath, csv, 'utf-8')
-
-  const pdfBuffer = await renderReportPdf(data)
-  writeFileSync(pdfPath, pdfBuffer)
+  writeFileSync(csvPath, buildCsv(data), 'utf-8')
 
   return db.createReportHistoryEntry({
     clientId,
     startDate: startDay,
     endDate: endDay,
-    pdfPath,
+    csvPath
+  })
+}
+
+// Team report from the shared DB. `person` omitted → whole team; otherwise that
+// one member. The client is matched by name (shared ids differ from local).
+export async function generateTeamReport(
+  clientId: number,
+  startDay: string,
+  endDay: string,
+  person?: string
+): Promise<ReportHistoryEntry> {
+  const client = db.getClient(clientId)
+  if (!client) throw new Error(`Unknown client ${clientId}`)
+
+  const startISO = `${startDay}T00:00:00.000Z`
+  const endISO = `${endDay}T23:59:59.999Z`
+  const rows = await fetchTeamSessions(client.name, startISO, endISO, person)
+
+  const csvPath = reportFilePath(client.name, startDay, endDay, person ?? 'team')
+  writeFileSync(csvPath, buildTeamCsv(rows), 'utf-8')
+
+  return db.createReportHistoryEntry({
+    clientId,
+    startDate: startDay,
+    endDate: endDay,
     csvPath
   })
 }
