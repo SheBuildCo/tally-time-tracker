@@ -160,11 +160,17 @@ function TeamSyncSection(): React.JSX.Element {
             value={url}
             onChange={(e) => setUrl(e.target.value)}
             type="password"
-            placeholder={status?.hasUrl ? '••••••••••••••••' : 'postgresql://postgres:…@db.….supabase.co:5432/postgres'}
+            placeholder={
+              status?.hasUrl
+                ? '••••••••••••••••'
+                : 'postgresql://postgres.<ref>:…@aws-0-<region>.pooler.supabase.com:5432/postgres'
+            }
             className="w-full rounded-md border border-slate-300 px-3 py-1.5 font-mono text-xs"
           />
           <p className="mt-1 text-xs text-slate-500">
-            Treat this like a shared password — anyone with it can read and change the team’s data.
+            Use Supabase’s <strong>Session pooler</strong> string (Connect → Session pooler) — it
+            works on every network. The direct <code>db.&lt;ref&gt;.supabase.co</code> string is
+            IPv6-only and won’t connect on most machines. Treat it like a shared password.
           </p>
         </div>
 
