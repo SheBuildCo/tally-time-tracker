@@ -10,8 +10,14 @@ import { getRangeRows, getSessionActivities, invalidateSession } from './ingest'
 import { buildRangeSummary } from './analytics'
 import { getHealth, isAvailable } from './activitywatch'
 import { DEFAULT_IDLE_AUTO_STOP_MINUTES } from './timer'
-import { generateReport } from './reports'
-import { fetchTeamSummary, getLastSyncResult, syncNow } from './sync'
+import { generateReport, generateTeamReport } from './reports'
+import {
+  deleteRemoteSession,
+  fetchTeamSummary,
+  getLastSyncResult,
+  listTeamPeople,
+  syncNow
+} from './sync'
 import {
   PERSON_NAME_KEY,
   SUPABASE_URL_KEY,
@@ -81,6 +87,17 @@ export function registerHandlers(ctx: HandlerContext): void {
       const session = db.getSession(sessionId)
       if (session) invalidateSession(session)
     },
+    'sessions:delete': async (id: number) => {
+      const session = db.getSession(id)
+      if (!session) return { ok: true as const, remoteDeleted: true }
+      // Unfinalize the affected day(s) so the dashboard/report recompute without
+      // this session's override, then delete locally (cascades to snapshot +
+      // exclusions) and from the shared DB.
+      invalidateSession(session)
+      db.deleteSession(id)
+      const remoteDeleted = await deleteRemoteSession(session)
+      return { ok: true as const, remoteDeleted }
+    },
 
     // Analytics
     'analytics:range': async (days: number) => {
@@ -114,6 +131,10 @@ export function registerHandlers(ctx: HandlerContext): void {
     // Reports (CSV only)
     'reports:generate': (clientId: number, startDay: string, endDay: string) =>
       generateReport(clientId, startDay, endDay),
+    // Team report from the shared DB: whole team when `person` is omitted, else
+    // that one member.
+    'reports:generateTeam': (clientId: number, startDay: string, endDay: string, person?: string) =>
+      generateTeamReport(clientId, startDay, endDay, person),
     'reports:history': (clientId?: number) => db.listReportHistory(clientId),
     'reports:openFile': (path: string) => shell.openPath(path),
 
@@ -133,6 +154,7 @@ export function registerHandlers(ctx: HandlerContext): void {
     'team:test': (url?: string) => testConnection(url),
     'team:sync': () => syncNow(),
     'team:summary': (days: number) => fetchTeamSummary(days),
+    'team:people': () => listTeamPeople(),
 
     // ActivityWatch
     'aw:health': () => isAvailable()
@@ -162,6 +184,7 @@ export const CHANNELS = [
   'sessions:activities',
   'sessions:exclude',
   'sessions:include',
+  'sessions:delete',
   'analytics:range',
   'settings:get',
   'settings:updateShortcuts',
@@ -170,11 +193,13 @@ export const CHANNELS = [
   'settings:clearActivityData',
   'aw:health',
   'reports:generate',
+  'reports:generateTeam',
   'reports:history',
   'reports:openFile',
   'team:status',
   'team:setup',
   'team:test',
   'team:sync',
-  'team:summary'
+  'team:summary',
+  'team:people'
 ] as const

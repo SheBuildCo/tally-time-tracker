@@ -379,6 +379,13 @@ export function endSession(id: number, endTime: string): TimerSession | null {
   return getSession(id)
 }
 
+// Permanently delete a session. Its snapshot and exclusions go with it via
+// ON DELETE CASCADE (foreign_keys pragma is on). Used to drop a session that
+// isn't worth billing so it never appears in a report.
+export function deleteSession(id: number): void {
+  db.prepare('DELETE FROM timer_sessions WHERE id = ?').run(id)
+}
+
 export function getSession(id: number): TimerSession | null {
   const r = db.prepare('SELECT * FROM timer_sessions WHERE id = ?').get(id) as any
   return r ? rowToSession(r) : null

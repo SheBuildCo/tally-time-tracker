@@ -46,6 +46,8 @@ export const api = {
     invoke<SessionExclusion>('sessions:exclude', sessionId, app, host, activity),
   includeActivity: (exclusionId: number, sessionId: number) =>
     invoke<void>('sessions:include', exclusionId, sessionId),
+  deleteSession: (id: number) =>
+    invoke<{ ok: true; remoteDeleted: boolean }>('sessions:delete', id),
 
   // Analytics
   analyticsRange: (days: number) => invoke<RangeSummary>('analytics:range', days),
@@ -61,6 +63,9 @@ export const api = {
   // Reports (CSV only)
   generateReport: (clientId: number, startDay: string, endDay: string) =>
     invoke<ReportHistoryEntry>('reports:generate', clientId, startDay, endDay),
+  // Team report from the shared DB. Omit `person` for the whole team.
+  generateTeamReport: (clientId: number, startDay: string, endDay: string, person?: string) =>
+    invoke<ReportHistoryEntry>('reports:generateTeam', clientId, startDay, endDay, person),
   listReportHistory: (clientId?: number) => invoke<ReportHistoryEntry[]>('reports:history', clientId),
   openReportFile: (path: string) => invoke<string>('reports:openFile', path),
 
@@ -71,6 +76,7 @@ export const api = {
   teamTest: (url?: string) => invoke<{ ok: boolean; message: string }>('team:test', url),
   teamSync: () => invoke<SyncResult>('team:sync'),
   teamSummary: (days: number) => invoke<TeamSummary>('team:summary', days),
+  teamPeople: () => invoke<string[]>('team:people'),
 
   // ActivityWatch
   awHealth: () => invoke<boolean>('aw:health'),

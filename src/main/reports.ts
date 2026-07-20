@@ -12,6 +12,7 @@ import { mkdirSync, writeFileSync } from 'fs'
 import type { TimerSession, SessionActivity, ReportHistoryEntry } from '../shared/types'
 import { formatDay, formatTimeOfDay, formatHoursDecimal } from '../shared/format'
 import { sessionActiveSeconds } from './analytics'
+import { fetchTeamSessions, type TeamSessionRow } from './sync'
 import * as db from './db'
 import { getSessionActivities } from './ingest'
 
@@ -102,6 +103,33 @@ export function buildCsv(data: ReportData): string {
   return '﻿' + rows.join('\r\n')
 }
 
+// ---- Team CSV (from the shared DB) ----
+
+const TEAM_CSV_HEADER = ['Date', 'Person', 'Client', 'Description', 'Start', 'End', 'Hours', 'Amount']
+
+// One row per session across the team (or one member), with a Person column.
+// Same shape as buildCsv otherwise: local times, active hours, Amount = Hours ×
+// rate. Rows come pre-computed from Supabase (fetchTeamSessions).
+export function buildTeamCsv(rows: TeamSessionRow[]): string {
+  const out: string[] = [TEAM_CSV_HEADER.join(',')]
+  for (const r of rows) {
+    if (r.activeSeconds <= 0) continue
+    const hours = Number(formatHoursDecimal(r.activeSeconds))
+    const line = [
+      formatDay(r.startTime),
+      r.person,
+      r.client,
+      r.notes ?? '',
+      formatTimeOfDay(r.startTime),
+      r.endTime ? formatTimeOfDay(r.endTime) : '',
+      hours.toFixed(2),
+      formatAmount(hours, r.billableRate)
+    ].map(csvEscape)
+    out.push(line.join(','))
+  }
+  return '﻿' + out.join('\r\n')
+}
+
 // ---- File output ----
 
 function reportsDir(): string {
@@ -114,8 +142,14 @@ function sanitizeForFilename(s: string): string {
   return s.replace(/[^a-z0-9]+/gi, '-').replace(/^-+|-+$/g, '') || 'report'
 }
 
-export function reportFilePath(clientName: string, startDay: string, endDay: string): string {
-  const base = `${sanitizeForFilename(clientName)}_${startDay}_to_${endDay}_${Date.now()}`
+export function reportFilePath(
+  clientName: string,
+  startDay: string,
+  endDay: string,
+  label?: string
+): string {
+  const who = label ? `${sanitizeForFilename(label)}_` : ''
+  const base = `${sanitizeForFilename(clientName)}_${who}${startDay}_to_${endDay}_${Date.now()}`
   return join(reportsDir(), `${base}.csv`)
 }
 
@@ -130,6 +164,32 @@ export async function generateReport(
   const csvPath = reportFilePath(data.clientName, startDay, endDay)
 
   writeFileSync(csvPath, buildCsv(data), 'utf-8')
+
+  return db.createReportHistoryEntry({
+    clientId,
+    startDate: startDay,
+    endDate: endDay,
+    csvPath
+  })
+}
+
+// Team report from the shared DB. `person` omitted → whole team; otherwise that
+// one member. The client is matched by name (shared ids differ from local).
+export async function generateTeamReport(
+  clientId: number,
+  startDay: string,
+  endDay: string,
+  person?: string
+): Promise<ReportHistoryEntry> {
+  const client = db.getClient(clientId)
+  if (!client) throw new Error(`Unknown client ${clientId}`)
+
+  const startISO = `${startDay}T00:00:00.000Z`
+  const endISO = `${endDay}T23:59:59.999Z`
+  const rows = await fetchTeamSessions(client.name, startISO, endISO, person)
+
+  const csvPath = reportFilePath(client.name, startDay, endDay, person ?? 'team')
+  writeFileSync(csvPath, buildTeamCsv(rows), 'utf-8')
 
   return db.createReportHistoryEntry({
     clientId,

@@ -10,9 +10,17 @@ function daysAgo(n: number): string {
   return d.toISOString().slice(0, 10)
 }
 
+// Who a report covers. 'me' = this machine's local data; 'team' = the whole
+// team from Supabase; anything else is a specific team member's name.
+const ME = 'me'
+const TEAM = 'team'
+
 export function Reports(): React.JSX.Element {
   const clients = useStore((s) => s.clients)
   const [clientId, setClientId] = useState<number | ''>('')
+  const [who, setWho] = useState<string>(ME)
+  const [teamConfigured, setTeamConfigured] = useState(false)
+  const [people, setPeople] = useState<string[]>([])
   const [startDay, setStartDay] = useState(daysAgo(7))
   const [endDay, setEndDay] = useState(daysAgo(0))
   const [generating, setGenerating] = useState(false)
@@ -27,6 +35,14 @@ export function Reports(): React.JSX.Element {
     loadHistory()
   }, [loadHistory])
 
+  // Populate the team member list once team sync is configured.
+  useEffect(() => {
+    api.teamStatus().then((s) => {
+      setTeamConfigured(s.configured)
+      if (s.configured) api.teamPeople().then(setPeople)
+    })
+  }, [])
+
   useEffect(() => {
     if (clientId === '' && clients.length > 0) setClientId(clients[0].id)
   }, [clients, clientId])
@@ -36,7 +52,13 @@ export function Reports(): React.JSX.Element {
     setGenerating(true)
     setError(null)
     try {
-      await api.generateReport(clientId, startDay, endDay)
+      if (who === ME) {
+        await api.generateReport(clientId, startDay, endDay)
+      } else if (who === TEAM) {
+        await api.generateTeamReport(clientId, startDay, endDay)
+      } else {
+        await api.generateTeamReport(clientId, startDay, endDay, who)
+      }
       await loadHistory()
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to generate report')
@@ -67,6 +89,24 @@ export function Reports(): React.JSX.Element {
           </select>
         </label>
         <label className="flex flex-col text-sm">
+          <span className="mb-1 text-slate-500">Who</span>
+          <select
+            value={who}
+            onChange={(e) => setWho(e.target.value)}
+            className="rounded-md border border-slate-300 px-3 py-1.5"
+          >
+            <option value={ME}>Me (this computer)</option>
+            <option value={TEAM} disabled={!teamConfigured}>
+              Whole team{teamConfigured ? '' : ' — set up team sync'}
+            </option>
+            {people.map((p) => (
+              <option key={p} value={p} disabled={!teamConfigured}>
+                {p}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label className="flex flex-col text-sm">
           <span className="mb-1 text-slate-500">From</span>
           <input
             type="date"
@@ -92,6 +132,13 @@ export function Reports(): React.JSX.Element {
           {generating ? 'Generating…' : 'Generate report'}
         </button>
       </div>
+
+      {who !== ME && (
+        <p className="rounded-md bg-slate-50 px-3 py-2 text-xs text-slate-500">
+          Team reports cover time that’s been synced to the shared database (roughly the last week
+          onward, building up over time). For your own complete history, choose “Me”.
+        </p>
+      )}
 
       {error && (
         <p className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
