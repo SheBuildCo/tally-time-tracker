@@ -22,26 +22,27 @@ describe('toSharedRows', () => {
     expect(rows[0]).toMatchObject({ person_id: 1, day: '2026-07-15', client_id: 1, seconds: 600 })
   })
 
-  it('maps unattributed time to the -1 sentinel', () => {
+  // Unassigned time is no longer stored or synced — an unattributed row is
+  // dropped before push, not mapped to a sentinel.
+  it('drops unattributed (null-client) rows', () => {
     const rows = toSharedRows(1, '2026-07-15', [local({ clientId: null })], new Map())
-    expect(rows[0].client_id).toBe(-1)
+    expect(rows).toHaveLength(0)
   })
 
   // A client deleted locally but still referenced by an old rollup row must not
-  // be pushed under someone else's id — it becomes unattributed.
-  it('falls back to unassigned when the client is not in the map', () => {
+  // be pushed under someone else's id — it is dropped.
+  it('drops rows whose client is not in the map', () => {
     const rows = toSharedRows(1, '2026-07-15', [local({ clientId: 99 })], new Map([[6, 1]]))
-    expect(rows[0].client_id).toBe(-1)
+    expect(rows).toHaveLength(0)
   })
 
-  // SQLite allows two PK rows differing only by a NULL client; Postgres does
-  // not. Without merging, the second row would collide and its time be lost.
-  it('merges rows that collide once NULL becomes -1, summing their time', () => {
+  // Two rows for the same client/app/activity/host merge, summing their time.
+  it('merges duplicate rows, summing their time', () => {
     const rows = toSharedRows(
       1,
       '2026-07-15',
-      [local({ clientId: null, seconds: 600 }), local({ clientId: null, seconds: 300 })],
-      new Map()
+      [local({ seconds: 600 }), local({ seconds: 300 })],
+      new Map([[6, 1]])
     )
     expect(rows).toHaveLength(1)
     expect(rows[0].seconds).toBe(900) // no time lost
@@ -106,43 +107,6 @@ describe('aggregateTeam', () => {
     expect(t.clients).toHaveLength(1)
     expect(t.clients[0].seconds).toBe(5400)
     expect(t.clients[0].amount).toBe(225) // 1.5h @ 150
-  })
-
-  // The shared schema stores "no client" as -1 because Postgres PKs reject
-  // NULL. It must surface as Unassigned/null, never as a client called "-1".
-  it('maps the -1 sentinel back to unassigned', () => {
-    const t = aggregateTeam(
-      [row({ client_id: -1, client_name: null, color: null, billable_rate: null, billable_seconds: 0 })],
-      7
-    )
-
-    expect(t.clients[0].clientId).toBeNull()
-    expect(t.clients[0].clientName).toBe('Unassigned')
-    expect(t.clients[0].amount).toBe(0)
-    expect(t.billableSeconds).toBe(0)
-  })
-
-  // Unattributed time is the majority of a manual-timer user's day: it must
-  // count toward total tracked but never toward billable value.
-  it('counts unassigned time in the total but not the billable value', () => {
-    const t = aggregateTeam(
-      [
-        row({ seconds: 3600, billable_seconds: 3600 }),
-        row({
-          client_id: -1,
-          client_name: null,
-          color: null,
-          billable_rate: null,
-          seconds: 7200,
-          billable_seconds: 0
-        })
-      ],
-      7
-    )
-
-    expect(t.totalSeconds).toBe(10800)
-    expect(t.billableSeconds).toBe(3600)
-    expect(t.clients.reduce((s, c) => s + c.amount, 0)).toBe(150)
   })
 
   it('splits one person across clients and days', () => {

@@ -12,9 +12,13 @@ import * as db from './db'
 import { fetchEvents } from './activitywatch'
 import { categorizeAll, activityLabel } from './categorize'
 import { applySessionOverrides, rollup } from './analytics'
+import { localDayISO } from '../shared/format'
 
-export function todayUTC(): string {
-  return new Date().toISOString().slice(0, 10)
+// Today's calendar day in the machine's LOCAL timezone. Days are bucketed
+// locally (not UTC) so the dashboard's "today" and per-day rollups match the
+// user's actual day — an evening-local session no longer files under tomorrow.
+export function todayLocal(): string {
+  return localDayISO()
 }
 
 // The earliest day we're allowed to ingest from ActivityWatch. Anything AW
@@ -22,28 +26,32 @@ export function todayUTC(): string {
 // data" reset) is never pulled in, no matter how wide a range is requested.
 function trackingStartDay(): string {
   const iso = db.getSetting('tracking_started_at')
-  return (iso ?? new Date().toISOString()).slice(0, 10)
+  return localDayISO(iso ? new Date(iso) : new Date())
 }
 
-// Last N calendar days (UTC), oldest first, including today, clamped to the
+// Last N calendar days (local), oldest first, including today, clamped to the
 // tracking-start floor.
 export function dayStrings(days: number): string[] {
   const startFloor = trackingStartDay()
   const out: string[] = []
   const now = new Date()
   for (let i = days - 1; i >= 0; i--) {
-    const d = new Date(now)
-    d.setUTCDate(d.getUTCDate() - i)
-    const day = d.toISOString().slice(0, 10)
+    // Construct via local Y/M/D so month/day rollover is computed in local time.
+    const d = new Date(now.getFullYear(), now.getMonth(), now.getDate() - i)
+    const day = localDayISO(d)
     if (day >= startFloor) out.push(day)
   }
   return out
 }
 
+// A local calendar day's [start, end) as UTC ISO instants, for the AW query.
+// Local midnight → the next local midnight, expressed in UTC (AW stores UTC),
+// so we fetch exactly the events the user experienced on that local day.
 function dayBounds(day: string): [string, string] {
-  const start = `${day}T00:00:00.000Z`
-  const end = new Date(Date.parse(start) + 24 * 60 * 60 * 1000).toISOString()
-  return [start, end]
+  const [y, m, d] = day.split('-').map(Number)
+  const start = new Date(y, m - 1, d, 0, 0, 0, 0)
+  const end = new Date(start.getTime() + 24 * 60 * 60 * 1000)
+  return [start.toISOString(), end.toISOString()]
 }
 
 function exclusionMap(sessions: TimerSession[]): Map<number, SessionExclusion[]> {
@@ -75,7 +83,7 @@ async function computeDay(day: string): Promise<DailyActivityRow[]> {
 // Days before the tracking-start floor are never included.
 export async function getRangeRows(days: number): Promise<DailyActivityRow[]> {
   const wanted = dayStrings(days)
-  const today = todayUTC()
+  const today = todayLocal()
   const out: DailyActivityRow[] = []
 
   for (const day of wanted) {

@@ -55,15 +55,14 @@ export const api = {
   updateShortcuts: (toggle: string, picker: string) =>
     invoke<void>('settings:updateShortcuts', toggle, picker),
   setAutoLaunch: (enabled: boolean) => invoke<void>('settings:setAutoLaunch', enabled),
+  setIdleAutoStop: (minutes: number) => invoke<void>('settings:setIdleAutoStop', minutes),
   clearActivityData: () => invoke<void>('settings:clearActivityData'),
 
-  // Reports
+  // Reports (CSV only)
   generateReport: (clientId: number, startDay: string, endDay: string) =>
     invoke<ReportHistoryEntry>('reports:generate', clientId, startDay, endDay),
   listReportHistory: (clientId?: number) => invoke<ReportHistoryEntry[]>('reports:history', clientId),
   openReportFile: (path: string) => invoke<string>('reports:openFile', path),
-  getReportTemplate: () => invoke<string>('reports:getTemplate'),
-  saveReportTemplate: (html: string) => invoke<void>('reports:saveTemplate', html),
 
   // Team sync (shared database)
   teamStatus: () => invoke<TeamStatus>('team:status'),

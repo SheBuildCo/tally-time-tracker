@@ -8,7 +8,8 @@ import * as db from './db'
 import * as timer from './timer'
 import { getRangeRows, getSessionActivities, invalidateSession } from './ingest'
 import { buildRangeSummary } from './analytics'
-import { isAvailable } from './activitywatch'
+import { getHealth, isAvailable } from './activitywatch'
+import { DEFAULT_IDLE_AUTO_STOP_MINUTES } from './timer'
 import { generateReport } from './reports'
 import { fetchTeamSummary, getLastSyncResult, syncNow } from './sync'
 import {
@@ -36,7 +37,11 @@ function readSettings(): Settings {
     shortcutPicker: db.getSetting('shortcut_picker') ?? 'CommandOrControl+Shift+P',
     autoLaunch: db.getSetting('auto_launch') === 'true',
     trackingStartedAt: db.getSetting('tracking_started_at') ?? new Date().toISOString(),
-    awStatus: false // filled in live by settings:get
+    awStatus: false, // awStatus/awAfkWatcher filled in live by settings:get
+    awAfkWatcher: false,
+    idleAutoStopMinutes: Number(
+      db.getSetting('idle_auto_stop_minutes') ?? DEFAULT_IDLE_AUTO_STOP_MINUTES
+    )
   }
 }
 
@@ -86,7 +91,9 @@ export function registerHandlers(ctx: HandlerContext): void {
     // Settings
     'settings:get': async (): Promise<Settings> => {
       const s = readSettings()
-      s.awStatus = await isAvailable()
+      const health = await getHealth()
+      s.awStatus = health.available
+      s.awAfkWatcher = health.afkWatcher
       return s
     },
     'settings:updateShortcuts': (toggle: string, picker: string) => {
@@ -98,15 +105,17 @@ export function registerHandlers(ctx: HandlerContext): void {
       db.setSetting('auto_launch', enabled ? 'true' : 'false')
       ctx.setAutoLaunch(enabled)
     },
+    'settings:setIdleAutoStop': (minutes: number) => {
+      const m = Math.round(Number(minutes))
+      if (Number.isFinite(m) && m > 0) db.setSetting('idle_auto_stop_minutes', String(m))
+    },
     'settings:clearActivityData': () => db.clearActivityData(),
 
-    // Reports
+    // Reports (CSV only)
     'reports:generate': (clientId: number, startDay: string, endDay: string) =>
       generateReport(clientId, startDay, endDay),
     'reports:history': (clientId?: number) => db.listReportHistory(clientId),
     'reports:openFile': (path: string) => shell.openPath(path),
-    'reports:getTemplate': () => db.getSetting('report_template_html'),
-    'reports:saveTemplate': (html: string) => db.setSetting('report_template_html', html),
 
     // Team sync (shared Supabase database). Every one of these is safe to call
     // when team sync isn't configured — the UI stays usable either way.
@@ -157,13 +166,12 @@ export const CHANNELS = [
   'settings:get',
   'settings:updateShortcuts',
   'settings:setAutoLaunch',
+  'settings:setIdleAutoStop',
   'settings:clearActivityData',
   'aw:health',
   'reports:generate',
   'reports:history',
   'reports:openFile',
-  'reports:getTemplate',
-  'reports:saveTemplate',
   'team:status',
   'team:setup',
   'team:test',

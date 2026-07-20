@@ -7,12 +7,22 @@ import { BrowserWindow } from 'electron'
 import type { TimerState, TimerSession } from '../shared/types'
 import * as db from './db'
 import { invalidateSession, captureSessionSnapshot } from './ingest'
+import { getLastActiveAt } from './activitywatch'
+
+// Defaults for the forgotten-timer guards. Both are configurable via settings.
+export const DEFAULT_IDLE_AUTO_STOP_MINUTES = 15
+const DEFAULT_MAX_SESSION_HOURS = 10
+const IDLE_CHECK_INTERVAL_MS = 60_000
 
 let state: TimerState = { status: 'idle' }
 const listeners = new Set<(state: TimerState) => void>()
+let idleTimer: ReturnType<typeof setInterval> | null = null
+let checkingIdle = false
 
 // Rehydrate on boot: if a session was left running (app crashed / force-quit),
-// pick it back up so the user isn't silently losing tracked time.
+// pick it back up so the user isn't silently losing tracked time — then
+// immediately run the idle check, so a timer left running across an overnight
+// crash/sleep is auto-stopped and back-dated rather than counting the whole gap.
 export function initTimer(): void {
   const running = db.getRunningSession()
   if (running) {
@@ -22,6 +32,60 @@ export function initTimer(): void {
       clientId: running.clientId,
       startTime: running.startTime
     }
+    startIdleWatch()
+    void checkIdle()
+  }
+}
+
+function idleAutoStopMs(): number {
+  const m = Number(db.getSetting('idle_auto_stop_minutes'))
+  return (Number.isFinite(m) && m > 0 ? m : DEFAULT_IDLE_AUTO_STOP_MINUTES) * 60_000
+}
+
+function maxSessionMs(): number {
+  const h = Number(db.getSetting('max_session_hours'))
+  return (Number.isFinite(h) && h > 0 ? h : DEFAULT_MAX_SESSION_HOURS) * 3_600_000
+}
+
+function startIdleWatch(): void {
+  stopIdleWatch()
+  idleTimer = setInterval(() => void checkIdle(), IDLE_CHECK_INTERVAL_MS)
+}
+
+function stopIdleWatch(): void {
+  if (idleTimer) {
+    clearInterval(idleTimer)
+    idleTimer = null
+  }
+}
+
+// Auto-stop a forgotten timer. Preferred path: AW's AFK data — if the user has
+// been idle >= the threshold, stop and back-date end_time to when they were
+// last active, so trailing idle never inflates the session. If AFK data is
+// unavailable we can't detect idle, so a hard max-duration cap is the safety
+// net. (Displayed duration comes from the AFK-filtered snapshot either way, so
+// even a capped end_time doesn't over-count active hours.)
+async function checkIdle(): Promise<void> {
+  if (state.status !== 'running' || checkingIdle) return
+  checkingIdle = true
+  try {
+    if (state.status !== 'running') return
+    const startMs = Date.parse(state.startTime)
+    const now = Date.now()
+
+    const lastActive = await getLastActiveAt(state.startTime)
+    if (lastActive) {
+      if (now - lastActive.getTime() >= idleAutoStopMs()) {
+        const end = Math.max(lastActive.getTime(), startMs) // never before start
+        stopTimer(new Date(end).toISOString())
+      }
+      return
+    }
+
+    // No AFK signal — safety net only.
+    if (now - startMs >= maxSessionMs()) stopTimer(new Date(now).toISOString())
+  } finally {
+    checkingIdle = false
   }
 }
 
@@ -53,13 +117,18 @@ export function startTimer(clientId: number): TimerSession {
     clientId: session.clientId,
     startTime: session.startTime
   }
+  startIdleWatch()
   broadcast()
   return session
 }
 
-export function stopTimer(): TimerSession | null {
+// Stop the running timer. `endTimeISO` defaults to now; the idle auto-stop
+// passes a back-dated time (the user's last active moment) so trailing idle
+// isn't counted.
+export function stopTimer(endTimeISO?: string): TimerSession | null {
   if (state.status !== 'running') return null
-  const session = db.endSession(state.sessionId, new Date().toISOString())
+  stopIdleWatch()
+  const session = db.endSession(state.sessionId, endTimeISO ?? new Date().toISOString())
   state = { status: 'idle' }
   if (session) {
     invalidateSession(session)

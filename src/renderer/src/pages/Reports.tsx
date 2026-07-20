@@ -1,5 +1,4 @@
 import { useEffect, useState, useCallback } from 'react'
-import { Link } from 'react-router-dom'
 import type { ReportHistoryEntry } from '@shared/types'
 import { useStore } from '../store'
 import { api } from '../api'
@@ -50,12 +49,7 @@ export function Reports(): React.JSX.Element {
 
   return (
     <div className="mx-auto max-w-4xl space-y-6">
-      <div className="flex items-center justify-between">
-        <h1 className="text-xl font-semibold">Reports</h1>
-        <Link to="/reports/template" className="text-sm text-slate-500 hover:text-slate-900">
-          Edit template →
-        </Link>
-      </div>
+      <h1 className="text-xl font-semibold">Reports</h1>
 
       <div className="flex flex-wrap items-end gap-3 rounded-lg border border-slate-200 bg-white p-4">
         <label className="flex flex-col text-sm">
@@ -128,12 +122,6 @@ export function Reports(): React.JSX.Element {
                   </td>
                   <td className="px-4 py-2">{formatDate(h.createdAt)}</td>
                   <td className="px-4 py-2 text-right">
-                    <button
-                      onClick={() => api.openReportFile(h.pdfPath)}
-                      className="mr-3 text-sm font-medium text-slate-900 underline-offset-2 hover:underline"
-                    >
-                      Open PDF
-                    </button>
                     <button
                       onClick={() => api.openReportFile(h.csvPath)}
                       className="text-sm font-medium text-slate-900 underline-offset-2 hover:underline"

@@ -6,6 +6,7 @@ import type {
   DailyActivityRow,
   TimerSession,
   SessionExclusion,
+  SessionActivity,
   Client,
   ClientSummary,
   DailyTotal,
@@ -61,11 +62,29 @@ export function applySessionOverrides(
   })
 }
 
+// ---- Session duration ----
+//
+// The canonical duration of a manual-timer session is the sum of its ACTIVE
+// (AFK-filtered) tracked seconds — NOT wall-clock end−start. A timer left
+// running overnight, or with the user away, produces a huge wall-clock span but
+// little active time; billing off wall-clock is how the 10-12h sessions
+// appeared. The snapshot rows (from ingest's fetchAndGroupActivities) are
+// already AFK-filtered when the AW AFK watcher is present, so summing the
+// non-excluded ones gives the real worked time.
+export function sessionActiveSeconds(activities: SessionActivity[]): number {
+  return activities.reduce((sum, a) => sum + (a.excluded ? 0 : a.seconds), 0)
+}
+
 // ---- Rollup ----
 
 export function rollup(categorized: Categorized[], day: string): DailyActivityRow[] {
   const map = new Map<string, DailyActivityRow>()
   for (const c of categorized) {
+    // Drop unattributed time entirely — Tally only tracks time booked to a
+    // client (via a timer session or a rule). Time that matched neither is
+    // noise the team doesn't want stored, shown, or synced. This single
+    // choke-point keeps unassigned out of the dashboard, team view and Supabase.
+    if (c.clientId == null) continue
     const activity = activityLabel(c.event)
     const host = c.event.host
     const key = `${c.clientId}|${c.event.app}|${activity}|${host}|${c.billable}`
@@ -96,16 +115,20 @@ export function buildRangeSummary(
 ): RangeSummary {
   const clientById = new Map(clients.map((c) => [c.id, c]))
 
-  // Per-client aggregation.
-  const summaryMap = new Map<number | null, ClientSummary>()
+  // Per-client aggregation. Rows are always client-attributed now (rollup drops
+  // unassigned time), so there is no "Unassigned" bucket. A row can only lack a
+  // matching client if that client was deleted after the fact — label it
+  // neutrally rather than reintroducing an unassigned category.
+  const summaryMap = new Map<number, ClientSummary>()
   for (const row of rows) {
+    if (row.clientId == null) continue
     const key = row.clientId
     let s = summaryMap.get(key)
     if (!s) {
-      const client = key != null ? clientById.get(key) : undefined
+      const client = clientById.get(key)
       s = {
         clientId: key,
-        clientName: client?.name ?? 'Unassigned',
+        clientName: client?.name ?? `Client #${key}`,
         color: client?.color ?? '#94a3b8',
         seconds: 0,
         billableSeconds: 0,

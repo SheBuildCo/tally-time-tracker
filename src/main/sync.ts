@@ -16,11 +16,9 @@
 
 import * as db from './db'
 import { connect, ensurePersonId, friendlyError, getPersonName, isConfigured } from './supabase'
+import { localDayISO } from '../shared/format'
 import type { ClientSummary, DailyTotal, TeamMemberSummary, TeamSummary } from '../shared/types'
 import type postgres from 'postgres'
-
-/** The shared schema's sentinel for "no client" (Postgres PKs reject NULL). */
-const NO_CLIENT = -1
 
 /** Trailing days pushed on each sync. Recent days are the ones that change. */
 const SYNC_DAYS = 7
@@ -41,13 +39,13 @@ export function getLastSyncResult(): SyncResult | null {
   return lastResult
 }
 
-/** Inclusive list of UTC day strings ending today. Mirrors ingest.ts's shape. */
+/** Inclusive list of local day strings ending today. Mirrors ingest.ts's shape. */
 function recentDays(days: number): string[] {
   const out: string[] = []
-  const today = new Date()
+  const now = new Date()
   for (let i = days - 1; i >= 0; i--) {
-    const d = new Date(today.getTime() - i * 86400000)
-    out.push(d.toISOString().slice(0, 10))
+    const d = new Date(now.getFullYear(), now.getMonth(), now.getDate() - i)
+    out.push(localDayISO(d))
   }
   return out
 }
@@ -104,7 +102,13 @@ export function toSharedRows(
 ): ActivityInsert[] {
   const merged = new Map<string, ActivityInsert>()
   for (const r of local) {
-    const client_id = r.clientId == null ? NO_CLIENT : (clientMap.get(r.clientId) ?? NO_CLIENT)
+    // Unassigned time is not tracked any more, so a local row should always have
+    // a client. Defensively skip anything unattributed or referencing a client
+    // that isn't in the shared database (e.g. deleted) rather than inventing a
+    // sentinel — the team view never shows "unassigned".
+    if (r.clientId == null) continue
+    const client_id = clientMap.get(r.clientId)
+    if (client_id == null) continue
     const key = `${client_id}|${r.app}|${r.activity}|${r.host}`
     const existing = merged.get(key)
     if (existing) {
@@ -322,7 +326,7 @@ export async function fetchTeamSummary(days: number): Promise<TeamSummary> {
            SUM(CASE WHEN d.billable THEN d.seconds ELSE 0 END)::int AS billable_seconds
     FROM daily_activity d
     JOIN people p ON p.id = d.person_id
-    LEFT JOIN clients c ON c.id = d.client_id
+    JOIN clients c ON c.id = d.client_id
     WHERE d.day >= ${start} AND d.day <= ${end}
     GROUP BY p.name, d.client_id, c.name, c.color, c.billable_rate, d.day
   `
@@ -343,11 +347,11 @@ type TeamRow = {
 
 /** Pure aggregation, split out so it can be unit-tested without a database. */
 export function aggregateTeam(rows: TeamRow[], days: number): TeamSummary {
-  const key = (id: number): number | null => (id === NO_CLIENT ? null : id)
-
+  // Every row is client-attributed now (the query inner-joins clients and
+  // unassigned time is never stored), so there is no sentinel to unmap.
   const blankClient = (r: TeamRow): ClientSummary => ({
-    clientId: key(r.client_id),
-    clientName: r.client_name ?? 'Unassigned',
+    clientId: r.client_id,
+    clientName: r.client_name ?? `Client #${r.client_id}`,
     color: r.color ?? '#94a3b8',
     seconds: 0,
     billableSeconds: 0,
@@ -355,7 +359,7 @@ export function aggregateTeam(rows: TeamRow[], days: number): TeamSummary {
   })
 
   const people = new Map<string, TeamMemberSummary>()
-  const clients = new Map<number | null, ClientSummary>()
+  const clients = new Map<number, ClientSummary>()
   const daily = new Map<string, DailyTotal>()
   let totalSeconds = 0
   let billableSeconds = 0
@@ -373,7 +377,7 @@ export function aggregateTeam(rows: TeamRow[], days: number): TeamSummary {
     m.seconds += r.seconds
     m.billableSeconds += r.billable_seconds
     m.amount += amount
-    let mc = m.clients.find((c) => c.clientId === key(r.client_id))
+    let mc = m.clients.find((c) => c.clientId === r.client_id)
     if (!mc) {
       mc = blankClient(r)
       m.clients.push(mc)
@@ -383,10 +387,10 @@ export function aggregateTeam(rows: TeamRow[], days: number): TeamSummary {
     mc.amount += amount
 
     // Team-wide per client.
-    let c = clients.get(key(r.client_id))
+    let c = clients.get(r.client_id)
     if (!c) {
       c = blankClient(r)
-      clients.set(key(r.client_id), c)
+      clients.set(r.client_id, c)
     }
     c.seconds += r.seconds
     c.billableSeconds += r.billable_seconds
@@ -399,9 +403,9 @@ export function aggregateTeam(rows: TeamRow[], days: number): TeamSummary {
       daily.set(r.day, d)
     }
     d.seconds += r.seconds
-    const existing = d.byClient.find((b) => b.clientId === key(r.client_id))
+    const existing = d.byClient.find((b) => b.clientId === r.client_id)
     if (existing) existing.seconds += r.seconds
-    else d.byClient.push({ clientId: key(r.client_id), seconds: r.seconds })
+    else d.byClient.push({ clientId: r.client_id, seconds: r.seconds })
 
     totalSeconds += r.seconds
     billableSeconds += r.billable_seconds

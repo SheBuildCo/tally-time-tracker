@@ -63,6 +63,10 @@ export interface TimerSession {
   endTime: string | null // null while running
   notes: string | null
   createdAt: string
+  // Active (AFK-filtered) tracked seconds, summed from the session's snapshot.
+  // Populated by listSessions for display; undefined elsewhere. This — not
+  // wall-clock end−start — is the real worked duration.
+  activeSeconds?: number
 }
 
 export interface SessionExclusion {
@@ -159,7 +163,6 @@ export interface ReportHistoryEntry {
   clientId: number
   startDate: string // YYYY-MM-DD
   endDate: string // YYYY-MM-DD
-  pdfPath: string
   csvPath: string
   createdAt: string
 }
@@ -169,5 +172,7 @@ export interface Settings {
   shortcutPicker: string
   autoLaunch: boolean
   trackingStartedAt: string // ISO-8601 UTC; AW history before this is never ingested
-  awStatus: boolean
+  awStatus: boolean // AW server reachable
+  awAfkWatcher: boolean // AW AFK watcher present (idle detection / accurate durations)
+  idleAutoStopMinutes: number // auto-stop a running timer after this much idle
 }

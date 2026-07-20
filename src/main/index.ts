@@ -1,11 +1,18 @@
 import { app, BrowserWindow } from 'electron'
 import { electronApp, optimizer } from '@electron-toolkit/utils'
 import { initDb } from './db'
-import { initTimer } from './timer'
+import { initTimer, getState, onStateChange } from './timer'
 import { registerHandlers } from './handlers'
 import { registerShortcuts, unregisterShortcuts } from './shortcuts'
 import { createTray, destroyTray } from './tray'
-import { createMainWindow, showMainWindow, openPicker, closePicker } from './windows'
+import {
+  createMainWindow,
+  showMainWindow,
+  openPicker,
+  closePicker,
+  openPinned,
+  closePinned
+} from './windows'
 import { syncNow } from './sync'
 import { disconnect } from './supabase'
 
@@ -66,6 +73,15 @@ if (!gotLock) {
 
     createMainWindow(startHidden)
     startTeamSync()
+
+    // Pinned timer widget: visible only while a timer runs. Driven by timer
+    // state changes, plus an initial check in case a session was rehydrated on
+    // boot (initTimer sets state without broadcasting).
+    onStateChange((s) => {
+      if (s.status === 'running') openPinned()
+      else closePinned()
+    })
+    if (getState().status === 'running') openPinned()
 
     app.on('activate', () => {
       if (BrowserWindow.getAllWindows().length === 0) createMainWindow(false)

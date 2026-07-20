@@ -24,12 +24,7 @@
   "dependencies": {
     "@electron-toolkit/preload": "^3.0.2",
     "@electron-toolkit/utils": "^4.0.0",
-    "@tiptap/core": "^3.27.3",
-    "@tiptap/pm": "^3.27.3",
-    "@tiptap/react": "^3.27.3",
-    "@tiptap/starter-kit": "^3.27.3",
     "better-sqlite3": "^12.11.1",
-    "node-html-parser": "^9.0.0",
     "postgres": "^3.4.5",
     "react-router-dom": "^6.28.0",
     "zustand": "^5.0.2"
