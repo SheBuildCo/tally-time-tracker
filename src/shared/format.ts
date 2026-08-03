@@ -60,3 +60,18 @@ export function formatTimeOfDay(iso: string): string {
 export function formatHoursDecimal(seconds: number): string {
   return (Math.max(0, seconds) / 3600).toFixed(2)
 }
+
+// Hours to 1dp for at-a-glance retainer readouts, e.g. "12.4". One decimal is
+// deliberate: a retainer is a budget, not an invoice line, and 2dp reads as
+// false precision on a clock that moves every second.
+export function formatHoursShort(hours: number): string {
+  return (Math.round(Math.abs(hours) * 10) / 10).toFixed(1)
+}
+
+// The retainer position as a phrase: "12.4 h left" while there's budget,
+// "2.1 h over" once it's blown. Shared by the timer banner and the pinned
+// widget so both always word it identically.
+export function formatRetainerRemaining(remainingSeconds: number): string {
+  const hours = remainingSeconds / 3600
+  return hours < 0 ? `${formatHoursShort(hours)} h over` : `${formatHoursShort(hours)} h left`
+}

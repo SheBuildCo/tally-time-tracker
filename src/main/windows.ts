@@ -120,6 +120,13 @@ export function closePicker(): void {
 
 const PINNED_W = 240
 const PINNED_H = 92
+// Taller variant leaves room for the retainer line. A client with no retainer
+// keeps the original compact widget rather than showing an empty row.
+const PINNED_H_RETAINER = 112
+
+function pinnedHeight(withRetainer: boolean): number {
+  return withRetainer ? PINNED_H_RETAINER : PINNED_H
+}
 
 function loadPinnedPos(): { x: number; y: number } | null {
   const raw = db.getSetting('pinned_pos')
@@ -139,8 +146,14 @@ function defaultPinnedPos(): { x: number; y: number } {
   return { x: width - PINNED_W - 24, y: 24 }
 }
 
-export function openPinned(): void {
+export function openPinned(withRetainer = false): void {
+  const height = pinnedHeight(withRetainer)
+
   if (pinnedWindow && !pinnedWindow.isDestroyed()) {
+    // The next timer may be on a client with a different retainer setting, so
+    // re-fit the height before showing it again.
+    const [w, h] = pinnedWindow.getSize()
+    if (h !== height) pinnedWindow.setSize(w, height)
     pinnedWindow.showInactive() // show without stealing focus from the user's work
     return
   }
@@ -149,7 +162,7 @@ export function openPinned(): void {
 
   pinnedWindow = new BrowserWindow({
     width: PINNED_W,
-    height: PINNED_H,
+    height,
     x,
     y,
     frame: false,

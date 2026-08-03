@@ -59,10 +59,11 @@ export function initMemoryDb(): Database.Database {
 function migrate(): void {
   db.exec(`
     CREATE TABLE IF NOT EXISTS clients (
-      id            INTEGER PRIMARY KEY AUTOINCREMENT,
-      name          TEXT NOT NULL,
-      billable_rate REAL NOT NULL DEFAULT 0,
-      color         TEXT NOT NULL DEFAULT '#6366f1'
+      id             INTEGER PRIMARY KEY AUTOINCREMENT,
+      name           TEXT NOT NULL,
+      billable_rate  REAL NOT NULL DEFAULT 0,
+      retainer_hours REAL NOT NULL DEFAULT 0,
+      color          TEXT NOT NULL DEFAULT '#6366f1'
     );
 
     CREATE TABLE IF NOT EXISTS rules (
@@ -143,6 +144,11 @@ function migrate(): void {
     CREATE INDEX IF NOT EXISTS idx_report_history_client ON report_history(client_id);
   `)
 
+  // CREATE TABLE IF NOT EXISTS never touches an existing table, so every column
+  // added after the first release has to be applied explicitly for machines that
+  // already have a tally.db.
+  addColumnIfMissing('clients', 'retainer_hours', 'retainer_hours REAL NOT NULL DEFAULT 0')
+
   // First run (or upgrading from a DB that predates this setting): anchor
   // ingestion to "now" so we never retroactively pull in AW history that
   // predates the user actually starting to use Tally.
@@ -151,16 +157,24 @@ function migrate(): void {
   }
 }
 
+/** Idempotent additive migration for a single column. */
+function addColumnIfMissing(table: string, column: string, ddl: string): void {
+  const cols = db.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[]
+  if (!cols.some((c) => c.name === column)) {
+    db.exec(`ALTER TABLE ${table} ADD COLUMN ${ddl}`)
+  }
+}
+
 function seedIfEmpty(): void {
   const count = db.prepare('SELECT COUNT(*) AS n FROM clients').get() as { n: number }
   if (count.n > 0) return
 
   const insertClient = db.prepare(
-    'INSERT INTO clients (name, billable_rate, color) VALUES (?, ?, ?)'
+    'INSERT INTO clients (name, billable_rate, retainer_hours, color) VALUES (?, ?, ?, ?)'
   )
-  const internal = insertClient.run('Internal / Admin', 0, '#64748b').lastInsertRowid as number
-  insertClient.run('Example Client A', 150, '#6366f1')
-  insertClient.run('Example Client B', 120, '#10b981')
+  const internal = insertClient.run('Internal / Admin', 0, 0, '#64748b').lastInsertRowid as number
+  insertClient.run('Example Client A', 150, 0, '#6366f1')
+  insertClient.run('Example Client B', 120, 0, '#10b981')
 
   // A couple of starter rules mapping common internal apps to Internal/Admin.
   const insertRule = db.prepare(
@@ -184,9 +198,16 @@ function rowToClient(r: {
   id: number
   name: string
   billable_rate: number
+  retainer_hours: number
   color: string
 }): Client {
-  return { id: r.id, name: r.name, billableRate: r.billable_rate, color: r.color }
+  return {
+    id: r.id,
+    name: r.name,
+    billableRate: r.billable_rate,
+    retainerHours: r.retainer_hours,
+    color: r.color
+  }
 }
 
 export function listClients(): Client[] {
@@ -201,8 +222,8 @@ export function getClient(id: number): Client | null {
 
 export function createClient(input: Omit<Client, 'id'>): Client {
   const info = db
-    .prepare('INSERT INTO clients (name, billable_rate, color) VALUES (?, ?, ?)')
-    .run(input.name, input.billableRate, input.color)
+    .prepare('INSERT INTO clients (name, billable_rate, retainer_hours, color) VALUES (?, ?, ?, ?)')
+    .run(input.name, input.billableRate, input.retainerHours ?? 0, input.color)
   return getClient(info.lastInsertRowid as number)!
 }
 
@@ -210,12 +231,9 @@ export function updateClient(id: number, input: Partial<Omit<Client, 'id'>>): Cl
   const existing = getClient(id)
   if (!existing) return null
   const merged = { ...existing, ...input }
-  db.prepare('UPDATE clients SET name = ?, billable_rate = ?, color = ? WHERE id = ?').run(
-    merged.name,
-    merged.billableRate,
-    merged.color,
-    id
-  )
+  db.prepare(
+    'UPDATE clients SET name = ?, billable_rate = ?, retainer_hours = ?, color = ? WHERE id = ?'
+  ).run(merged.name, merged.billableRate, merged.retainerHours, merged.color, id)
   return getClient(id)
 }
 
@@ -445,6 +463,42 @@ export function getSessionsForClientInRange(
     )
     .all(clientId, endISO, startISO) as any[]
   return rows.map(rowToSession)
+}
+
+// Total active seconds this machine has tracked for a client over
+// [startISO, endISO] — snapshot total minus anything excluded, matching
+// sessionActiveSeconds. Sessions are picked by start_time (not overlap) so the
+// figure reconciles with the team-wide query in sync.ts, which does the same.
+// Used as the offline fallback for the retainer readout.
+export function getClientActiveSecondsInRange(
+  clientId: number,
+  startISO: string,
+  endISO: string
+): number {
+  const row = db
+    .prepare(
+      `SELECT COALESCE(SUM(
+                COALESCE(snap.total, 0) - COALESCE(exc.total, 0)
+              ), 0) AS active_seconds
+       FROM timer_sessions ts
+       LEFT JOIN (
+         SELECT session_id, SUM(seconds) AS total
+         FROM session_activity_snapshot GROUP BY session_id
+       ) snap ON snap.session_id = ts.id
+       LEFT JOIN (
+         SELECT sas.session_id, SUM(sas.seconds) AS total
+         FROM session_activity_snapshot sas
+         JOIN session_exclusions se
+           ON se.session_id = sas.session_id AND se.app = sas.app
+          AND se.host = sas.host AND se.activity = sas.activity
+         GROUP BY sas.session_id
+       ) exc ON exc.session_id = ts.id
+       WHERE ts.client_id = ?
+         AND ts.end_time IS NOT NULL
+         AND ts.start_time >= ? AND ts.start_time <= ?`
+    )
+    .get(clientId, startISO, endISO) as { active_seconds: number }
+  return Math.max(0, row.active_seconds)
 }
 
 export function getRunningSession(): TimerSession | null {

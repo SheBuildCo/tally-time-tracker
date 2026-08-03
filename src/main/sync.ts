@@ -65,15 +65,90 @@ async function pushClients(sql: postgres.Sql): Promise<Map<number, number>> {
   const map = new Map<number, number>()
   for (const c of db.listClients()) {
     const [row] = await sql<{ id: number }[]>`
-      INSERT INTO clients (name, billable_rate, color)
-      VALUES (${c.name}, ${c.billableRate}, ${c.color})
+      INSERT INTO clients (name, billable_rate, retainer_hours, color)
+      VALUES (${c.name}, ${c.billableRate}, ${c.retainerHours}, ${c.color})
       ON CONFLICT (name) DO UPDATE SET
-        billable_rate = excluded.billable_rate, color = excluded.color
+        billable_rate = excluded.billable_rate,
+        retainer_hours = excluded.retainer_hours,
+        color = excluded.color
       RETURNING id
     `
     map.set(c.id, row.id)
   }
   return map
+}
+
+export type RenameRemoteResult = 'ok' | 'name-taken' | 'skipped' | 'failed'
+
+/**
+ * Rename a client in the shared database so the team's existing history follows
+ * the new name. Necessary because clients are joined by name (see the header):
+ * without this, a local rename silently strands every teammate's tracked time
+ * under the old name and starts a second shared client.
+ *
+ * Fail-soft like deleteRemoteSession — the local rename has already succeeded
+ * and must not be undone by a network problem. 'name-taken' means the shared
+ * database already had a different client under the new name (UNIQUE), which the
+ * caller surfaces to the user rather than silently merging the two.
+ */
+export async function renameRemoteClient(
+  oldName: string,
+  newName: string
+): Promise<RenameRemoteResult> {
+  if (!isConfigured()) return 'skipped'
+  try {
+    const sql = connect()
+    if (!sql) return 'skipped'
+    const existing = await sql<{ id: number }[]>`SELECT id FROM clients WHERE name = ${newName}`
+    if (existing.length > 0) return 'name-taken'
+    await sql`UPDATE clients SET name = ${newName} WHERE name = ${oldName}`
+    return 'ok'
+  } catch (err) {
+    console.error('[sync] failed to rename remote client', oldName, '->', newName, err)
+    return 'failed'
+  }
+}
+
+/**
+ * Total active seconds the WHOLE TEAM has tracked for one client (matched by
+ * name) over [startISO, endISO]. Scalar counterpart to fetchTeamSessions, using
+ * the identical snapshot-minus-exclusions join so the retainer readout and a
+ * team report can never disagree.
+ *
+ * Only completed sessions count — an in-progress session isn't pushed until it
+ * stops — so callers showing a live figure add the running elapsed themselves.
+ */
+export async function fetchClientUsedSeconds(
+  clientName: string,
+  startISO: string,
+  endISO: string
+): Promise<number> {
+  const sql = connect()
+  if (!sql) throw new Error('Team sync is not set up yet.')
+
+  const [row] = await sql<{ active_seconds: number }[]>`
+    SELECT COALESCE(SUM(
+             COALESCE(snap.total, 0) - COALESCE(exc.total, 0)
+           ), 0)::int AS active_seconds
+    FROM timer_sessions ts
+    JOIN clients c ON c.id = ts.client_id
+    LEFT JOIN (
+      SELECT session_id, SUM(seconds) AS total
+      FROM session_activity_snapshot GROUP BY session_id
+    ) snap ON snap.session_id = ts.id
+    LEFT JOIN (
+      SELECT sas.session_id, SUM(sas.seconds) AS total
+      FROM session_activity_snapshot sas
+      JOIN session_exclusions se
+        ON se.session_id = sas.session_id AND se.app = sas.app
+       AND se.host = sas.host AND se.activity = sas.activity
+      GROUP BY sas.session_id
+    ) exc ON exc.session_id = ts.id
+    WHERE c.name = ${clientName}
+      AND ts.end_time IS NOT NULL
+      AND ts.start_time >= ${startISO} AND ts.start_time <= ${endISO}
+  `
+  return Math.max(0, row?.active_seconds ?? 0)
 }
 
 /** Rows per INSERT. Big enough to be fast, small enough to stay under limits. */
@@ -384,6 +459,7 @@ export interface TeamSessionRow {
   endTime: string | null
   notes: string | null
   billableRate: number
+  retainerHours: number
   activeSeconds: number
 }
 
@@ -410,11 +486,12 @@ export async function fetchTeamSessions(
       end_time: string | null
       notes: string | null
       billable_rate: number | null
+      retainer_hours: number | null
       active_seconds: number
     }[]
   >`
     SELECT p.name AS person, c.name AS client, ts.start_time, ts.end_time, ts.notes,
-           c.billable_rate,
+           c.billable_rate, c.retainer_hours,
            (COALESCE(snap.total, 0) - COALESCE(exc.total, 0))::int AS active_seconds
     FROM timer_sessions ts
     JOIN people p ON p.id = ts.person_id
@@ -445,6 +522,7 @@ export async function fetchTeamSessions(
     endTime: r.end_time,
     notes: r.notes,
     billableRate: r.billable_rate ?? 0,
+    retainerHours: r.retainer_hours ?? 0,
     activeSeconds: r.active_seconds
   }))
 }

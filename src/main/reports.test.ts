@@ -17,11 +17,16 @@ function activity(partial: Partial<SessionActivity> & { app: string; activity: s
   return { host: '', seconds: 0, excluded: false, exclusionId: null, ...partial }
 }
 
-function reportData(sessions: SessionWithActivities[], billableRate = 150): ReportData {
+function reportData(
+  sessions: SessionWithActivities[],
+  billableRate = 150,
+  retainerHours = 0
+): ReportData {
   return {
     clientId: 1,
     clientName: 'Acme Corp',
     billableRate,
+    retainerHours,
     startDay: '2026-07-01',
     endDay: '2026-07-08',
     sessions
@@ -44,7 +49,9 @@ describe('buildCsv', () => {
     const csv = buildCsv(data)
     const lines = csv.replace(/^﻿/, '').split('\r\n')
 
-    expect(lines[0]).toBe('Date,Client,Description,Start,End,Hours,Amount')
+    expect(lines[0]).toBe(
+      'Date,Client,Description,Start,End,Hours,Amount,Retainer Hours,Retainer Remaining'
+    )
     expect(lines).toHaveLength(2) // header + 1 session row
     expect(csv.charCodeAt(0)).toBe(0xfeff) // BOM present
 
@@ -52,6 +59,42 @@ describe('buildCsv', () => {
     expect(cols[1]).toBe('Acme Corp')
     expect(cols[5]).toBe('0.25') // active hours, single decimal-hours column
     expect(cols[6]).toBe('37.50') // Hours × rate
+    expect(cols[7]).toBe('') // no retainer configured → both columns blank
+    expect(cols[8]).toBe('')
+  })
+
+  it('carries the retainer and a running remainder that goes negative on overrun', () => {
+    const data = reportData(
+      [
+        {
+          session: session({
+            id: 1,
+            startTime: '2026-07-01T09:00:00.000Z',
+            endTime: '2026-07-01T12:00:00.000Z'
+          }),
+          activities: [activity({ app: 'code.exe', activity: 'a', seconds: 3600 * 6 })]
+        },
+        {
+          session: session({
+            id: 2,
+            startTime: '2026-07-02T09:00:00.000Z',
+            endTime: '2026-07-02T12:00:00.000Z'
+          }),
+          activities: [activity({ app: 'code.exe', activity: 'b', seconds: 3600 * 6 })]
+        }
+      ],
+      150,
+      10 // 10h retainer, 12h worked
+    )
+    const lines = buildCsv(data).replace(/^﻿/, '').split('\r\n')
+
+    const first = lines[1].split(',')
+    expect(first[7]).toBe('10.00') // inclusion repeated on every row
+    expect(first[8]).toBe('4.00') // 10 − 6
+
+    const second = lines[2].split(',')
+    expect(second[7]).toBe('10.00')
+    expect(second[8]).toBe('-2.00') // 10 − 12, over the retainer
   })
 
   it('uses the session notes as the description, blank when none', () => {
@@ -116,6 +159,7 @@ describe('buildTeamCsv', () => {
     endTime: '2026-07-15T10:00:00.000Z',
     notes: null,
     billableRate: 150,
+    retainerHours: 0,
     activeSeconds: 900, // 0.25h
     ...over
   })
@@ -123,7 +167,9 @@ describe('buildTeamCsv', () => {
   it('has the Person column header and one row per session', () => {
     const csv = buildTeamCsv([teamRow({ person: 'Oli' }), teamRow({ person: 'Megs', activeSeconds: 3600 })])
     const lines = csv.replace(/^﻿/, '').split('\r\n')
-    expect(lines[0]).toBe('Date,Person,Client,Description,Start,End,Hours,Amount')
+    expect(lines[0]).toBe(
+      'Date,Person,Client,Description,Start,End,Hours,Amount,Retainer Hours,Retainer Remaining'
+    )
     expect(lines).toHaveLength(3) // header + 2 sessions
 
     const first = lines[1].split(',')
@@ -143,5 +189,15 @@ describe('buildTeamCsv', () => {
     const cols = lines[1].split(',')
     expect(cols[6]).toBe('1.00')
     expect(cols[7]).toBe('') // no rate → blank amount
+  })
+
+  it('depletes one retainer across the whole team, not per person', () => {
+    const csv = buildTeamCsv([
+      teamRow({ person: 'Oli', retainerHours: 10, activeSeconds: 3600 * 4 }),
+      teamRow({ person: 'Megs', retainerHours: 10, activeSeconds: 3600 * 4 })
+    ])
+    const lines = csv.replace(/^﻿/, '').split('\r\n')
+    expect(lines[1].split(',')[9]).toBe('6.00') // 10 − 4
+    expect(lines[2].split(',')[9]).toBe('2.00') // 10 − 8, cumulative across people
   })
 })

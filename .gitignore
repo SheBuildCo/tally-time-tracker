@@ -21,3 +21,10 @@ data
 .next/
 next-env.d.ts
 tsconfig.tsbuildinfo
+
+# Claude Code: launch.json is shared (it's how the app is started for a dev
+# run); settings.local.json is per-machine permission state.
+.claude/settings.local.json
+
+# Git bundles used to move work between machines — transfer artefacts, not source.
+*.bundle

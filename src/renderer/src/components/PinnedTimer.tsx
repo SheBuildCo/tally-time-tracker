@@ -9,7 +9,8 @@
 import { useEffect, useState, type CSSProperties } from 'react'
 import { useStore } from '../store'
 import { api } from '../api'
-import { formatClock } from '../format'
+import { formatClock, formatRetainerRemaining } from '../format'
+import { useRetainer } from '../useRetainer'
 
 const DRAG: CSSProperties = { WebkitAppRegion: 'drag' } as CSSProperties
 const NO_DRAG: CSSProperties = { WebkitAppRegion: 'no-drag' } as CSSProperties
@@ -19,6 +20,10 @@ export function PinnedTimer(): React.JSX.Element {
   const clients = useStore((s) => s.clients)
   const init = useStore((s) => s.init)
   const [now, setNow] = useState(Date.now())
+
+  const running = timer.status === 'running'
+  const elapsed = running ? (now - Date.parse(timer.startTime)) / 1000 : 0
+  const retainer = useRetainer(running ? timer.clientId : null, elapsed)
 
   // Pull initial timer state + client names; live updates arrive via the store's
   // onTimerState subscription.
@@ -37,7 +42,6 @@ export function PinnedTimer(): React.JSX.Element {
   }
 
   const client = clients.find((c) => c.id === timer.clientId)
-  const elapsed = (now - Date.parse(timer.startTime)) / 1000
 
   return (
     <div
@@ -50,6 +54,19 @@ export function PinnedTimer(): React.JSX.Element {
           {client?.name ?? 'Tracking'}
         </div>
         <div className="font-mono text-base leading-tight tabular-nums">{formatClock(elapsed)}</div>
+        {retainer && (
+          <div
+            className={`truncate text-[11px] leading-tight tabular-nums ${
+              retainer.overBudget
+                ? 'text-red-400'
+                : retainer.low
+                  ? 'text-amber-300'
+                  : 'text-slate-400'
+            }`}
+          >
+            {formatRetainerRemaining(retainer.remainingSeconds)}
+          </div>
+        )}
       </div>
       <button
         style={NO_DRAG}

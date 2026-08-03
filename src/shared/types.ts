@@ -6,7 +6,29 @@ export interface Client {
   id: number
   name: string
   billableRate: number // currency units per hour
+  retainerHours: number // hours included per calendar month; 0 = no retainer
   color: string // hex or tailwind-ish token used for charts/badges
+}
+
+// Result of editing a client. `remoteRename` reports what happened to the copy
+// in the shared team database when the name changed: 'ok' it followed,
+// 'name-taken' the team already had a different client under that name,
+// 'skipped' team sync isn't set up, 'failed' the database was unreachable,
+// null the name didn't change.
+export interface ClientUpdateResult {
+  client: Client | null
+  remoteRename: 'ok' | 'name-taken' | 'skipped' | 'failed' | null
+}
+
+// A client's retainer position for the current calendar month. `usedSeconds`
+// counts COMPLETED sessions only, so a live timer's elapsed time is added on top
+// by the UI without double-counting.
+export interface RetainerStatus {
+  clientId: number
+  retainerHours: number // 0 = no retainer configured for this client
+  usedSeconds: number
+  source: 'team' | 'local' // 'local' = shared DB unreachable or not set up
+  asOf: string // ISO timestamp the figure was computed
 }
 
 export interface RuleMatch {

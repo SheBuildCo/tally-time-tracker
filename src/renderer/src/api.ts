@@ -3,6 +3,8 @@
 
 import type {
   Client,
+  ClientUpdateResult,
+  RetainerStatus,
   MappingRule,
   TimerState,
   TimerSession,
@@ -23,7 +25,7 @@ export const api = {
   listClients: () => invoke<Client[]>('clients:list'),
   createClient: (input: Omit<Client, 'id'>) => invoke<Client>('clients:create', input),
   updateClient: (id: number, input: Partial<Omit<Client, 'id'>>) =>
-    invoke<Client | null>('clients:update', id, input),
+    invoke<ClientUpdateResult>('clients:update', id, input),
   deleteClient: (id: number) => invoke<void>('clients:delete', id),
 
   // Rules
@@ -77,6 +79,10 @@ export const api = {
   teamSync: () => invoke<SyncResult>('team:sync'),
   teamSummary: (days: number) => invoke<TeamSummary>('team:summary', days),
   teamPeople: () => invoke<string[]>('team:people'),
+
+  // Retainer. `force` bypasses the main-process 60s cache.
+  retainerStatus: (clientId: number, force?: boolean) =>
+    invoke<RetainerStatus>('retainer:status', clientId, force),
 
   // ActivityWatch
   awHealth: () => invoke<boolean>('aw:health'),

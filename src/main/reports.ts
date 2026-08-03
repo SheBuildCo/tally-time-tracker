@@ -6,6 +6,12 @@
 // The CSV is the sole output: our monthly process is CSV -> Claude -> Canva, so
 // the file must be readable by someone with no context. One row per session,
 // all times in the machine's local timezone, a single decimal-hours duration.
+//
+// RETAINER COLUMNS: most clients are on a monthly retainer, so each row also
+// carries the client's included hours and what's left after the hours above it.
+// Remaining is measured against THIS REPORT'S RANGE, not the calendar month —
+// exact for the usual one-month report, and a plain hours-vs-inclusion
+// comparison for any other range.
 
 import { join } from 'path'
 import { mkdirSync, writeFileSync } from 'fs'
@@ -25,6 +31,7 @@ export interface ReportData {
   clientId: number
   clientName: string
   billableRate: number
+  retainerHours: number // hours included per month; 0 = no retainer
   startDay: string // YYYY-MM-DD
   endDay: string // YYYY-MM-DD
   sessions: SessionWithActivities[]
@@ -54,6 +61,7 @@ export async function getReportData(
     clientId,
     clientName: client.name,
     billableRate: client.billableRate,
+    retainerHours: client.retainerHours,
     startDay,
     endDay,
     sessions: sessionsWithActivities
@@ -69,11 +77,35 @@ function csvEscape(value: string): string {
   return value
 }
 
-const CSV_HEADER = ['Date', 'Client', 'Description', 'Start', 'End', 'Hours', 'Amount']
+const CSV_HEADER = [
+  'Date',
+  'Client',
+  'Description',
+  'Start',
+  'End',
+  'Hours',
+  'Amount',
+  'Retainer Hours',
+  'Retainer Remaining'
+]
 
 function formatAmount(hours: number, rate: number): string {
   if (rate <= 0) return '' // non-billable client — leave blank rather than $0.00
   return (hours * rate).toFixed(2)
+}
+
+// The client's monthly inclusion, repeated on every row so any single row is
+// self-explanatory. Blank when there's no retainer, for the same reason
+// formatAmount blanks a zero rate.
+function formatRetainer(retainerHours: number): string {
+  return retainerHours > 0 ? retainerHours.toFixed(2) : ''
+}
+
+// What's left of the retainer after the hours on this row and every row above
+// it. Goes negative once the retainer is exceeded, so the last row reads as the
+// final over/under position.
+function formatRetainerRemaining(retainerHours: number, cumulativeHours: number): string {
+  return retainerHours > 0 ? (retainerHours - cumulativeHours).toFixed(2) : ''
 }
 
 // One row per completed session, in local time. Duration is the session's
@@ -82,11 +114,13 @@ function formatAmount(hours: number, rate: number): string {
 // excluded (zero active time) are skipped rather than shown as 0h rows.
 export function buildCsv(data: ReportData): string {
   const rows: string[] = [CSV_HEADER.join(',')]
+  let cumulativeHours = 0
 
   for (const { session, activities } of data.sessions) {
     const seconds = sessionActiveSeconds(activities)
     if (seconds <= 0) continue
     const hours = Number(formatHoursDecimal(seconds))
+    cumulativeHours += hours
     const row = [
       formatDay(session.startTime),
       data.clientName,
@@ -94,7 +128,9 @@ export function buildCsv(data: ReportData): string {
       formatTimeOfDay(session.startTime),
       session.endTime ? formatTimeOfDay(session.endTime) : '',
       hours.toFixed(2),
-      formatAmount(hours, data.billableRate)
+      formatAmount(hours, data.billableRate),
+      formatRetainer(data.retainerHours),
+      formatRetainerRemaining(data.retainerHours, cumulativeHours)
     ].map(csvEscape)
     rows.push(row.join(','))
   }
@@ -105,16 +141,30 @@ export function buildCsv(data: ReportData): string {
 
 // ---- Team CSV (from the shared DB) ----
 
-const TEAM_CSV_HEADER = ['Date', 'Person', 'Client', 'Description', 'Start', 'End', 'Hours', 'Amount']
+const TEAM_CSV_HEADER = [
+  'Date',
+  'Person',
+  'Client',
+  'Description',
+  'Start',
+  'End',
+  'Hours',
+  'Amount',
+  'Retainer Hours',
+  'Retainer Remaining'
+]
 
 // One row per session across the team (or one member), with a Person column.
 // Same shape as buildCsv otherwise: local times, active hours, Amount = Hours ×
 // rate. Rows come pre-computed from Supabase (fetchTeamSessions).
 export function buildTeamCsv(rows: TeamSessionRow[]): string {
   const out: string[] = [TEAM_CSV_HEADER.join(',')]
+  // Consumed across the whole team — a retainer doesn't reset per person.
+  let cumulativeHours = 0
   for (const r of rows) {
     if (r.activeSeconds <= 0) continue
     const hours = Number(formatHoursDecimal(r.activeSeconds))
+    cumulativeHours += hours
     const line = [
       formatDay(r.startTime),
       r.person,
@@ -123,7 +173,9 @@ export function buildTeamCsv(rows: TeamSessionRow[]): string {
       formatTimeOfDay(r.startTime),
       r.endTime ? formatTimeOfDay(r.endTime) : '',
       hours.toFixed(2),
-      formatAmount(hours, r.billableRate)
+      formatAmount(hours, r.billableRate),
+      formatRetainer(r.retainerHours),
+      formatRetainerRemaining(r.retainerHours, cumulativeHours)
     ].map(csvEscape)
     out.push(line.join(','))
   }

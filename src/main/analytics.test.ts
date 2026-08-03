@@ -31,8 +31,8 @@ function session(
 }
 
 const clients: Client[] = [
-  { id: 1, name: 'Client A', billableRate: 100, color: '#111' },
-  { id: 2, name: 'Client B', billableRate: 200, color: '#222' }
+  { id: 1, name: 'Client A', billableRate: 100, retainerHours: 0, color: '#111' },
+  { id: 2, name: 'Client B', billableRate: 200, retainerHours: 40, color: '#222' }
 ]
 
 describe('applySessionOverrides', () => {

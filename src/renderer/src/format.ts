@@ -8,7 +8,9 @@ export {
   formatDate,
   formatDay,
   formatTimeOfDay,
-  formatHoursDecimal
+  formatHoursDecimal,
+  formatHoursShort,
+  formatRetainerRemaining
 } from '@shared/format'
 
 export function formatCurrency(amount: number): string {

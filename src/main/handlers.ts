@@ -16,8 +16,10 @@ import {
   fetchTeamSummary,
   getLastSyncResult,
   listTeamPeople,
+  renameRemoteClient,
   syncNow
 } from './sync'
+import { getRetainerStatus, invalidateRetainerCache } from './retainer'
 import {
   PERSON_NAME_KEY,
   SUPABASE_URL_KEY,
@@ -26,7 +28,13 @@ import {
   isConfigured,
   testConnection
 } from './supabase'
-import type { Client, MappingRule, Settings, TeamStatus } from '../shared/types'
+import type {
+  Client,
+  ClientUpdateResult,
+  MappingRule,
+  Settings,
+  TeamStatus
+} from '../shared/types'
 
 // Side-effecting capabilities the handlers need but that live in main/index or
 // other modules. Injected to avoid circular imports.
@@ -56,8 +64,21 @@ export function registerHandlers(ctx: HandlerContext): void {
     // Clients
     'clients:list': () => db.listClients(),
     'clients:create': (input: Omit<Client, 'id'>) => db.createClient(input),
-    'clients:update': (id: number, input: Partial<Omit<Client, 'id'>>) =>
-      db.updateClient(id, input),
+    // A rename has to reach the shared database too: clients are joined by name
+    // there, so renaming only locally would strand the team's existing history
+    // under the old name (see sync.ts's header).
+    'clients:update': async (
+      id: number,
+      input: Partial<Omit<Client, 'id'>>
+    ): Promise<ClientUpdateResult> => {
+      const before = db.getClient(id)
+      const client = db.updateClient(id, input)
+      invalidateRetainerCache(id)
+
+      const renamed = before && client && before.name !== client.name
+      const remoteRename = renamed ? await renameRemoteClient(before.name, client.name) : null
+      return { client, remoteRename }
+    },
     'clients:delete': (id: number) => db.deleteClient(id),
 
     // Rules
@@ -152,9 +173,17 @@ export function registerHandlers(ctx: HandlerContext): void {
       return { configured: isConfigured() }
     },
     'team:test': (url?: string) => testConnection(url),
-    'team:sync': () => syncNow(),
+    'team:sync': async () => {
+      const result = await syncNow()
+      invalidateRetainerCache() // a sync may have changed the team's usage
+      return result
+    },
     'team:summary': (days: number) => fetchTeamSummary(days),
     'team:people': () => listTeamPeople(),
+
+    // Retainer (team-wide usage of this calendar month's included hours)
+    'retainer:status': (clientId: number, force?: boolean) =>
+      getRetainerStatus(clientId, { force }),
 
     // ActivityWatch
     'aw:health': () => isAvailable()
@@ -201,5 +230,6 @@ export const CHANNELS = [
   'team:test',
   'team:sync',
   'team:summary',
-  'team:people'
+  'team:people',
+  'retainer:status'
 ] as const
