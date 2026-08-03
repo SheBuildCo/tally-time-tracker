@@ -1,6 +1,6 @@
 {
   "name": "tally",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Tally — desktop time tracker with manual timer + ActivityWatch capture",
   "main": "./out/main/index.js",
   "author": "SheBuild",
