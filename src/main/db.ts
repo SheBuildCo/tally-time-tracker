@@ -63,7 +63,11 @@ function migrate(): void {
       name           TEXT NOT NULL,
       billable_rate  REAL NOT NULL DEFAULT 0,
       retainer_hours REAL NOT NULL DEFAULT 0,
-      color          TEXT NOT NULL DEFAULT '#6366f1'
+      color          TEXT NOT NULL DEFAULT '#6366f1',
+      -- When this client's details were last EDITED BY A PERSON (not synced).
+      -- Drives last-edit-wins in sync.ts; the epoch default means a row nobody
+      -- has touched never overwrites a teammate's real edit.
+      updated_at     TEXT NOT NULL DEFAULT '1970-01-01T00:00:00.000Z'
     );
 
     CREATE TABLE IF NOT EXISTS rules (
@@ -148,6 +152,14 @@ function migrate(): void {
   // added after the first release has to be applied explicitly for machines that
   // already have a tally.db.
   addColumnIfMissing('clients', 'retainer_hours', 'retainer_hours REAL NOT NULL DEFAULT 0')
+  // Existing rows land on the epoch deliberately: before this column existed
+  // nobody's copy was authoritative, so no machine's untouched values should
+  // win. The first real edit anywhere becomes the truth.
+  addColumnIfMissing(
+    'clients',
+    'updated_at',
+    `updated_at TEXT NOT NULL DEFAULT '1970-01-01T00:00:00.000Z'`
+  )
 
   // First run (or upgrading from a DB that predates this setting): anchor
   // ingestion to "now" so we never retroactively pull in AW history that
@@ -222,8 +234,16 @@ export function getClient(id: number): Client | null {
 
 export function createClient(input: Omit<Client, 'id'>): Client {
   const info = db
-    .prepare('INSERT INTO clients (name, billable_rate, retainer_hours, color) VALUES (?, ?, ?, ?)')
-    .run(input.name, input.billableRate, input.retainerHours ?? 0, input.color)
+    .prepare(
+      'INSERT INTO clients (name, billable_rate, retainer_hours, color, updated_at) VALUES (?, ?, ?, ?, ?)'
+    )
+    .run(
+      input.name,
+      input.billableRate,
+      input.retainerHours ?? 0,
+      input.color,
+      new Date().toISOString()
+    )
   return getClient(info.lastInsertRowid as number)!
 }
 
@@ -231,10 +251,64 @@ export function updateClient(id: number, input: Partial<Omit<Client, 'id'>>): Cl
   const existing = getClient(id)
   if (!existing) return null
   const merged = { ...existing, ...input }
+  // Stamping updated_at is what makes this edit beat every other machine's copy
+  // on the next sync — see pushClients in sync.ts.
   db.prepare(
-    'UPDATE clients SET name = ?, billable_rate = ?, retainer_hours = ?, color = ? WHERE id = ?'
-  ).run(merged.name, merged.billableRate, merged.retainerHours, merged.color, id)
+    'UPDATE clients SET name = ?, billable_rate = ?, retainer_hours = ?, color = ?, updated_at = ? WHERE id = ?'
+  ).run(
+    merged.name,
+    merged.billableRate,
+    merged.retainerHours,
+    merged.color,
+    new Date().toISOString(),
+    id
+  )
   return getClient(id)
+}
+
+// ---- Client sync support ----
+//
+// updated_at is deliberately NOT part of the Client type: it's a sync
+// implementation detail, and the renderer has no use for it. These two
+// functions are the only way in or out.
+
+export interface ClientSyncRow extends Client {
+  updatedAt: string
+}
+
+export function listClientsForSync(): ClientSyncRow[] {
+  const rows = db.prepare('SELECT * FROM clients ORDER BY name').all() as any[]
+  return rows.map((r) => ({ ...rowToClient(r), updatedAt: r.updated_at }))
+}
+
+/**
+ * Apply a client from the shared database, matched by name (ids are
+ * per-machine). Creates it locally when it's new, and overwrites the local
+ * details ONLY when the shared copy was edited more recently.
+ *
+ * The remote timestamp is stored verbatim rather than stamped as "now", so a
+ * pulled row doesn't look like a fresh local edit and get pushed straight back —
+ * that would make two machines ping-pong forever.
+ */
+export function upsertClientFromRemote(remote: {
+  name: string
+  billableRate: number
+  retainerHours: number
+  color: string
+  updatedAt: string
+}): 'created' | 'updated' | 'unchanged' {
+  const existing = db.prepare('SELECT * FROM clients WHERE name = ?').get(remote.name) as any
+  if (!existing) {
+    db.prepare(
+      'INSERT INTO clients (name, billable_rate, retainer_hours, color, updated_at) VALUES (?, ?, ?, ?, ?)'
+    ).run(remote.name, remote.billableRate, remote.retainerHours, remote.color, remote.updatedAt)
+    return 'created'
+  }
+  if (remote.updatedAt <= existing.updated_at) return 'unchanged'
+  db.prepare(
+    'UPDATE clients SET billable_rate = ?, retainer_hours = ?, color = ?, updated_at = ? WHERE id = ?'
+  ).run(remote.billableRate, remote.retainerHours, remote.color, remote.updatedAt, existing.id)
+  return 'updated'
 }
 
 export function deleteClient(id: number): void {
@@ -499,6 +573,42 @@ export function getClientActiveSecondsInRange(
     )
     .get(clientId, startISO, endISO) as { active_seconds: number }
   return Math.max(0, row.active_seconds)
+}
+
+// Same figure as getClientActiveSecondsInRange, for every client at once, keyed
+// by client NAME to match the shared-database version (ids are per-machine, see
+// the header of sync.ts). One query rather than one per client, because the
+// dashboard needs the whole list at once.
+export function getAllClientsActiveSecondsInRange(
+  startISO: string,
+  endISO: string
+): Map<string, number> {
+  const rows = db
+    .prepare(
+      `SELECT c.name AS name,
+              COALESCE(SUM(
+                COALESCE(snap.total, 0) - COALESCE(exc.total, 0)
+              ), 0) AS active_seconds
+       FROM timer_sessions ts
+       JOIN clients c ON c.id = ts.client_id
+       LEFT JOIN (
+         SELECT session_id, SUM(seconds) AS total
+         FROM session_activity_snapshot GROUP BY session_id
+       ) snap ON snap.session_id = ts.id
+       LEFT JOIN (
+         SELECT sas.session_id, SUM(sas.seconds) AS total
+         FROM session_activity_snapshot sas
+         JOIN session_exclusions se
+           ON se.session_id = sas.session_id AND se.app = sas.app
+          AND se.host = sas.host AND se.activity = sas.activity
+         GROUP BY sas.session_id
+       ) exc ON exc.session_id = ts.id
+       WHERE ts.end_time IS NOT NULL
+         AND ts.start_time >= ? AND ts.start_time <= ?
+       GROUP BY c.name`
+    )
+    .all(startISO, endISO) as { name: string; active_seconds: number }[]
+  return new Map(rows.map((r) => [r.name, Math.max(0, r.active_seconds)]))
 }
 
 export function getRunningSession(): TimerSession | null {

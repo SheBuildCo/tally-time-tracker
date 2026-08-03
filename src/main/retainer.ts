@@ -15,7 +15,7 @@
 //    ticking every second without re-querying, and can't double-count.
 
 import * as db from './db'
-import { fetchClientUsedSeconds } from './sync'
+import { fetchAllClientsUsedSeconds, fetchClientUsedSeconds } from './sync'
 import { isConfigured } from './supabase'
 import type { RetainerStatus } from '../shared/types'
 
@@ -71,6 +71,7 @@ export async function getRetainerStatus(
 
   const status: RetainerStatus = {
     clientId,
+    clientName: client.name,
     retainerHours: client.retainerHours,
     usedSeconds,
     source,
@@ -78,4 +79,52 @@ export async function getRetainerStatus(
   }
   cache.set(clientId, { status, at: Date.now() })
   return status
+}
+
+/**
+ * Every client's retainer position for the current calendar month, in one round
+ * trip. The dashboard needs the whole list at once; asking getRetainerStatus per
+ * client would be one query each.
+ *
+ * Deliberately always the CALENDAR MONTH, whatever range the dashboard is
+ * showing. A retainer is a monthly budget, so "used" against any other window
+ * isn't a retainer position — it's just hours, and comparing a week's hours to a
+ * month's inclusion is what made the old rolling ranges unreadable.
+ */
+export async function getAllRetainerStatuses(): Promise<RetainerStatus[]> {
+  const clients = db.listClients()
+  const { startISO, endISO } = monthBounds()
+
+  let used: Map<string, number>
+  let source: 'team' | 'local'
+  if (isConfigured()) {
+    try {
+      used = await fetchAllClientsUsedSeconds(startISO, endISO)
+      source = 'team'
+    } catch (err) {
+      console.error('[retainer] team lookup failed, falling back to local:', err)
+      used = db.getAllClientsActiveSecondsInRange(startISO, endISO)
+      source = 'local'
+    }
+  } else {
+    used = db.getAllClientsActiveSecondsInRange(startISO, endISO)
+    source = 'local'
+  }
+
+  const asOf = new Date().toISOString()
+  const at = Date.now()
+  return clients.map((c) => {
+    const status: RetainerStatus = {
+      clientId: c.id,
+      clientName: c.name,
+      retainerHours: c.retainerHours,
+      usedSeconds: used.get(c.name) ?? 0,
+      source,
+      asOf
+    }
+    // Same figures the single-client path would return, so seed its cache too —
+    // the timer banner then starts from the dashboard's already-paid-for query.
+    cache.set(c.id, { status, at })
+    return status
+  })
 }

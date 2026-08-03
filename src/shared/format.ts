@@ -75,3 +75,48 @@ export function formatRetainerRemaining(remainingSeconds: number): string {
   const hours = remainingSeconds / 3600
   return hours < 0 ? `${formatHoursShort(hours)} h over` : `${formatHoursShort(hours)} h left`
 }
+
+// ---- Reporting periods ----
+//
+// Every range in the app is CALENDAR-ALIGNED, not a rolling window. A retainer
+// resets on the 1st, so a rolling "last 7 days" viewed on the 3rd of a month
+// mixes two retainer periods and makes used-vs-included unreadable — which is
+// exactly what a trailing window did before. Weeks align to Monday for the same
+// reason: a period that starts mid-week can't be compared to the one before it.
+
+export type Period = 'week' | 'month'
+
+/** Midnight local on the Monday of `date`'s week. */
+export function startOfWeek(date: Date = new Date()): Date {
+  const d = new Date(date.getFullYear(), date.getMonth(), date.getDate())
+  // getDay() is 0=Sunday; shift so Monday is the first day.
+  const back = (d.getDay() + 6) % 7
+  d.setDate(d.getDate() - back)
+  return d
+}
+
+/** Midnight local on the 1st of `date`'s month. */
+export function startOfMonth(date: Date = new Date()): Date {
+  return new Date(date.getFullYear(), date.getMonth(), 1)
+}
+
+export function startOfPeriod(period: Period, date: Date = new Date()): Date {
+  return period === 'week' ? startOfWeek(date) : startOfMonth(date)
+}
+
+/**
+ * How many calendar days the period covers so far, inclusive of today — the
+ * count the existing day-window queries (recentDays, getRangeRows) already take.
+ * Expressing the period this way means calendar alignment costs nothing
+ * downstream: on the 3rd of the month, 'month' is simply 3 days.
+ */
+export function periodDays(period: Period, date: Date = new Date()): number {
+  const start = startOfPeriod(period, date)
+  const today = new Date(date.getFullYear(), date.getMonth(), date.getDate())
+  const MS_PER_DAY = 24 * 60 * 60 * 1000
+  return Math.round((today.getTime() - start.getTime()) / MS_PER_DAY) + 1
+}
+
+export function periodLabel(period: Period): string {
+  return period === 'week' ? 'This week' : 'This month'
+}

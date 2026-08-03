@@ -25,6 +25,10 @@ export interface ClientUpdateResult {
 // by the UI without double-counting.
 export interface RetainerStatus {
   clientId: number
+  // Client ids are per-machine, so the shared database and the team dashboard
+  // key on name instead (see the header of src/main/sync.ts). Carrying the name
+  // lets a caller line a status up with a team-scoped row.
+  clientName: string
   retainerHours: number // 0 = no retainer configured for this client
   usedSeconds: number
   source: 'team' | 'local' // 'local' = shared DB unreachable or not set up

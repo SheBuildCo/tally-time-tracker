@@ -83,6 +83,8 @@ export const api = {
   // Retainer. `force` bypasses the main-process 60s cache.
   retainerStatus: (clientId: number, force?: boolean) =>
     invoke<RetainerStatus>('retainer:status', clientId, force),
+  // Every client's position for the current calendar month, for the dashboard.
+  retainerAll: () => invoke<RetainerStatus[]>('retainer:all'),
 
   // ActivityWatch
   awHealth: () => invoke<boolean>('aw:health'),

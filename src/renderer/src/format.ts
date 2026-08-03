@@ -10,8 +10,12 @@ export {
   formatTimeOfDay,
   formatHoursDecimal,
   formatHoursShort,
-  formatRetainerRemaining
+  formatRetainerRemaining,
+  periodDays,
+  periodLabel,
+  startOfPeriod
 } from '@shared/format'
+export type { Period } from '@shared/format'
 
 export function formatCurrency(amount: number): string {
   return new Intl.NumberFormat(undefined, {

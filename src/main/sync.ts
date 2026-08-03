@@ -35,6 +35,7 @@ export interface SyncResult {
   pushedDays?: number
   pushedRows?: number
   pushedSessions?: number
+  pulledClients?: number // clients created or updated from the shared database
   at: string
 }
 
@@ -63,19 +64,72 @@ function recentDays(days: number): string[] {
  */
 async function pushClients(sql: postgres.Sql): Promise<Map<number, number>> {
   const map = new Map<number, number>()
-  for (const c of db.listClients()) {
+  for (const c of db.listClientsForSync()) {
+    // LAST EDIT WINS, and only a real edit counts. This predicate is the whole
+    // point: every machine pushes its entire client list on every sync, so an
+    // unconditional upsert meant the last machine to sync overwrote whatever a
+    // teammate had just set — a retainer edited on one laptop was silently
+    // reverted 90 seconds later by another laptop's untouched copy.
     const [row] = await sql<{ id: number }[]>`
-      INSERT INTO clients (name, billable_rate, retainer_hours, color)
-      VALUES (${c.name}, ${c.billableRate}, ${c.retainerHours}, ${c.color})
+      INSERT INTO clients (name, billable_rate, retainer_hours, color, updated_at)
+      VALUES (${c.name}, ${c.billableRate}, ${c.retainerHours}, ${c.color}, ${c.updatedAt})
       ON CONFLICT (name) DO UPDATE SET
         billable_rate = excluded.billable_rate,
         retainer_hours = excluded.retainer_hours,
-        color = excluded.color
+        color = excluded.color,
+        updated_at = excluded.updated_at
+      WHERE clients.updated_at < excluded.updated_at
       RETURNING id
     `
-    map.set(c.id, row.id)
+    // A skipped DO UPDATE returns no row, so the id still has to be looked up —
+    // the local -> shared id map must cover every client either way.
+    if (row) {
+      map.set(c.id, row.id)
+      continue
+    }
+    const [existing] = await sql<{ id: number }[]>`SELECT id FROM clients WHERE name = ${c.name}`
+    if (existing) map.set(c.id, existing.id)
   }
   return map
+}
+
+/**
+ * Bring the shared client list down into local SQLite: clients a teammate added
+ * appear here, and their newer edits to a rate or retainer replace ours.
+ *
+ * Additive on purpose — a client missing locally is created, but a client
+ * missing REMOTELY is never deleted. Deleting cascades away sessions and report
+ * history (see the FKs in db.ts), so a delete propagating across the team would
+ * be unrecoverable; removing a client stays a deliberate, local act.
+ *
+ * Runs before the push so that within one sync we adopt the team's truth first
+ * and then contribute anything genuinely newer of our own.
+ */
+async function pullClients(sql: postgres.Sql): Promise<number> {
+  const rows = await sql<
+    {
+      name: string
+      billable_rate: number
+      retainer_hours: number | null
+      color: string
+      updated_at: Date
+    }[]
+  >`SELECT name, billable_rate, retainer_hours, color, updated_at FROM clients`
+
+  let changed = 0
+  for (const r of rows) {
+    const result = db.upsertClientFromRemote({
+      name: r.name,
+      billableRate: r.billable_rate,
+      retainerHours: r.retainer_hours ?? 0,
+      color: r.color,
+      // Normalise to the same ISO shape the local column stores, so the string
+      // comparison in upsertClientFromRemote is a valid time comparison.
+      updatedAt: new Date(r.updated_at).toISOString()
+    })
+    if (result !== 'unchanged') changed++
+  }
+  return changed
 }
 
 export type RenameRemoteResult = 'ok' | 'name-taken' | 'skipped' | 'failed'
@@ -149,6 +203,44 @@ export async function fetchClientUsedSeconds(
       AND ts.start_time >= ${startISO} AND ts.start_time <= ${endISO}
   `
   return Math.max(0, row?.active_seconds ?? 0)
+}
+
+/**
+ * fetchClientUsedSeconds for every client at once, keyed by client name. The
+ * dashboard shows a retainer position per row, and one round trip per client
+ * would put the whole team's Postgres connection budget behind a page render.
+ */
+export async function fetchAllClientsUsedSeconds(
+  startISO: string,
+  endISO: string
+): Promise<Map<string, number>> {
+  const sql = connect()
+  if (!sql) throw new Error('Team sync is not set up yet.')
+
+  const rows = await sql<{ name: string; active_seconds: number }[]>`
+    SELECT c.name AS name,
+           COALESCE(SUM(
+             COALESCE(snap.total, 0) - COALESCE(exc.total, 0)
+           ), 0)::int AS active_seconds
+    FROM timer_sessions ts
+    JOIN clients c ON c.id = ts.client_id
+    LEFT JOIN (
+      SELECT session_id, SUM(seconds) AS total
+      FROM session_activity_snapshot GROUP BY session_id
+    ) snap ON snap.session_id = ts.id
+    LEFT JOIN (
+      SELECT sas.session_id, SUM(sas.seconds) AS total
+      FROM session_activity_snapshot sas
+      JOIN session_exclusions se
+        ON se.session_id = sas.session_id AND se.app = sas.app
+       AND se.host = sas.host AND se.activity = sas.activity
+      GROUP BY sas.session_id
+    ) exc ON exc.session_id = ts.id
+    WHERE ts.end_time IS NOT NULL
+      AND ts.start_time >= ${startISO} AND ts.start_time <= ${endISO}
+    GROUP BY c.name
+  `
+  return new Map(rows.map((r) => [r.name, Math.max(0, r.active_seconds)]))
 }
 
 /** Rows per INSERT. Big enough to be fast, small enough to stay under limits. */
@@ -375,17 +467,22 @@ export async function syncNow(days = SYNC_DAYS): Promise<SyncResult> {
     }
 
     const personId = await ensurePersonId(sql, person)
+    // Pull before push: adopt the team's client list first, then contribute
+    // anything of ours that's genuinely newer.
+    const pulledClients = await pullClients(sql)
     const clientMap = await pushClients(sql)
     const window = recentDays(days)
     const pushedRows = await pushActivity(sql, personId, clientMap, window)
     const pushedSessions = await pushSessions(sql, personId, clientMap, window)
 
+    const clientNote = pulledClients > 0 ? ` Updated ${pulledClients} clients from the team.` : ''
     return (lastResult = {
       ok: true,
-      message: `Synced ${pushedRows} activities and ${pushedSessions} sessions across ${window.length} days.`,
+      message: `Synced ${pushedRows} activities and ${pushedSessions} sessions across ${window.length} days.${clientNote}`,
       pushedDays: window.length,
       pushedRows,
       pushedSessions,
+      pulledClients,
       at: new Date().toISOString()
     })
   } catch (err) {

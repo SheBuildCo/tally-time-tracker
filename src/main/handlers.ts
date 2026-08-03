@@ -19,7 +19,7 @@ import {
   renameRemoteClient,
   syncNow
 } from './sync'
-import { getRetainerStatus, invalidateRetainerCache } from './retainer'
+import { getAllRetainerStatuses, getRetainerStatus, invalidateRetainerCache } from './retainer'
 import {
   PERSON_NAME_KEY,
   SUPABASE_URL_KEY,
@@ -184,6 +184,8 @@ export function registerHandlers(ctx: HandlerContext): void {
     // Retainer (team-wide usage of this calendar month's included hours)
     'retainer:status': (clientId: number, force?: boolean) =>
       getRetainerStatus(clientId, { force }),
+    // Every client at once, for the dashboard's per-client retainer columns.
+    'retainer:all': () => getAllRetainerStatuses(),
 
     // ActivityWatch
     'aw:health': () => isAvailable()
@@ -231,5 +233,6 @@ export const CHANNELS = [
   'team:sync',
   'team:summary',
   'team:people',
-  'retainer:status'
+  'retainer:status',
+  'retainer:all'
 ] as const
