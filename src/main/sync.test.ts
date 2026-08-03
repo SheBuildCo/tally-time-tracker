@@ -124,6 +124,30 @@ describe('aggregateTeam', () => {
     expect(t.daily.map((d) => d.day)).toEqual(['2026-07-15', '2026-07-16']) // chronological
   })
 
+  // billable_rate now comes from the PERSON, so the same client worked by two
+  // people at different rates is worth the sum of each person's own rate — not
+  // one rate applied to the combined hours. This is the whole reason the rate
+  // moved off the client: Megs at $250, Oli at $150 and KP at $90 could never be
+  // represented by a single number on the client row.
+  it('values each person at their own rate on a shared client', () => {
+    const t = aggregateTeam(
+      [
+        row({ person: 'Megs', billable_rate: 250, seconds: 3600, billable_seconds: 3600 }),
+        row({ person: 'Oli', billable_rate: 150, seconds: 3600, billable_seconds: 3600 }),
+        row({ person: 'KP', billable_rate: 90, seconds: 3600, billable_seconds: 3600 })
+      ],
+      7
+    )
+
+    expect(t.people.find((p) => p.person === 'Megs')!.amount).toBe(250)
+    expect(t.people.find((p) => p.person === 'Oli')!.amount).toBe(150)
+    expect(t.people.find((p) => p.person === 'KP')!.amount).toBe(90)
+    // One client row, 3h, valued at 250 + 150 + 90 rather than 3 × any one rate.
+    expect(t.clients).toHaveLength(1)
+    expect(t.clients[0].seconds).toBe(10800)
+    expect(t.clients[0].amount).toBe(490)
+  })
+
   it('returns empty structures for no rows', () => {
     const t = aggregateTeam([], 7)
     expect(t).toMatchObject({ totalSeconds: 0, billableSeconds: 0, people: [], clients: [], daily: [] })

@@ -2,10 +2,14 @@
 // renderer (typed API wrappers, UI). Keep this file free of any runtime imports
 // so it can be pulled into either side without pulling in Node or browser deps.
 
+// A client is WHAT is worked on. Note there is no rate here: the team bills at
+// different rates per person (see Settings → your rate), so an hour on a client
+// is worth a different amount depending on who worked it. A single rate on the
+// client couldn't represent that — every machine wrote its own number into the
+// same field and they overwrote each other.
 export interface Client {
   id: number
   name: string
-  billableRate: number // currency units per hour
   retainerHours: number // hours included per calendar month; 0 = no retainer
   color: string // hex or tailwind-ish token used for charts/badges
 }
@@ -201,4 +205,5 @@ export interface Settings {
   awStatus: boolean // AW server reachable
   awAfkWatcher: boolean // AW AFK watcher present (idle detection / accurate durations)
   idleAutoStopMinutes: number // auto-stop a running timer after this much idle
+  personRate: number // THIS person's hourly rate; 0 = don't value their time
 }

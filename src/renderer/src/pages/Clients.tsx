@@ -11,7 +11,6 @@ const COLORS = ['#6366f1', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#0ea5e9'
 
 interface Draft {
   name: string
-  rate: string
   retainer: string
   color: string
 }
@@ -19,7 +18,6 @@ interface Draft {
 function draftFrom(c: Client): Draft {
   return {
     name: c.name,
-    rate: c.billableRate ? String(c.billableRate) : '',
     retainer: c.retainerHours ? String(c.retainerHours) : '',
     color: c.color
   }
@@ -53,7 +51,6 @@ export function Clients(): React.JSX.Element {
   const clients = useStore((s) => s.clients)
   const refreshClients = useStore((s) => s.refreshClients)
   const [name, setName] = useState('')
-  const [rate, setRate] = useState('')
   const [retainer, setRetainer] = useState('')
   const [color, setColor] = useState(COLORS[0])
   const [editingId, setEditingId] = useState<number | null>(null)
@@ -65,12 +62,10 @@ export function Clients(): React.JSX.Element {
     if (!name.trim()) return
     await api.createClient({
       name: name.trim(),
-      billableRate: Number(rate) || 0,
       retainerHours: Number(retainer) || 0,
       color
     })
     setName('')
-    setRate('')
     setRetainer('')
     await refreshClients()
   }
@@ -90,7 +85,6 @@ export function Clients(): React.JSX.Element {
     if (!draft || !draft.name.trim()) return
     const result = await api.updateClient(id, {
       name: draft.name.trim(),
-      billableRate: Number(draft.rate) || 0,
       retainerHours: Number(draft.retainer) || 0,
       color: draft.color
     })
@@ -116,7 +110,7 @@ export function Clients(): React.JSX.Element {
   async function remove(id: number): Promise<void> {
     const client = clients.find((c) => c.id === id)
     const ok = window.confirm(
-      `Delete "${client?.name ?? 'this client'}"? Every session and report recorded against it on this machine goes too. To change its rate or retainer, use Edit instead.`
+      `Delete "${client?.name ?? 'this client'}"? Every session and report recorded against it on this machine goes too. To change its retainer, use Edit instead.`
     )
     if (!ok) return
     await api.deleteClient(id)
@@ -138,16 +132,6 @@ export function Clients(): React.JSX.Element {
             onChange={(e) => setName(e.target.value)}
             className="rounded-md border border-slate-300 px-3 py-1.5"
             placeholder="Acme Corp"
-          />
-        </label>
-        <label className="flex flex-col text-sm">
-          <span className="mb-1 text-slate-500">Rate / hr</span>
-          <input
-            value={rate}
-            onChange={(e) => setRate(e.target.value)}
-            type="number"
-            className="w-28 rounded-md border border-slate-300 px-3 py-1.5"
-            placeholder="150"
           />
         </label>
         <label className="flex flex-col text-sm">
@@ -199,15 +183,6 @@ export function Clients(): React.JSX.Element {
                           />
                         </label>
                         <label className="flex flex-col text-sm">
-                          <span className="mb-1 text-slate-500">Rate / hr</span>
-                          <input
-                            value={draft.rate}
-                            onChange={(e) => setDraft({ ...draft, rate: e.target.value })}
-                            type="number"
-                            className="w-28 rounded-md border border-slate-300 px-3 py-1.5"
-                          />
-                        </label>
-                        <label className="flex flex-col text-sm">
                           <span className="mb-1 text-slate-500">Retainer hrs / mo</span>
                           <input
                             value={draft.retainer}
@@ -251,8 +226,7 @@ export function Clients(): React.JSX.Element {
                       </span>
                     </td>
                     <td className="px-4 py-2 text-slate-500">
-                      {c.billableRate > 0 ? `$${c.billableRate}/hr` : 'Non-billable'}
-                      {c.retainerHours > 0 && ` · ${c.retainerHours} h/mo retainer`}
+                      {c.retainerHours > 0 ? `${c.retainerHours} h/mo retainer` : 'No retainer'}
                     </td>
                     <td className="px-4 py-2 text-right">
                       <button

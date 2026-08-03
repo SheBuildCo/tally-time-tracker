@@ -71,10 +71,9 @@ async function pushClients(sql: postgres.Sql): Promise<Map<number, number>> {
     // teammate had just set — a retainer edited on one laptop was silently
     // reverted 90 seconds later by another laptop's untouched copy.
     const [row] = await sql<{ id: number }[]>`
-      INSERT INTO clients (name, billable_rate, retainer_hours, color, updated_at)
-      VALUES (${c.name}, ${c.billableRate}, ${c.retainerHours}, ${c.color}, ${c.updatedAt})
+      INSERT INTO clients (name, retainer_hours, color, updated_at)
+      VALUES (${c.name}, ${c.retainerHours}, ${c.color}, ${c.updatedAt})
       ON CONFLICT (name) DO UPDATE SET
-        billable_rate = excluded.billable_rate,
         retainer_hours = excluded.retainer_hours,
         color = excluded.color,
         updated_at = excluded.updated_at
@@ -109,18 +108,16 @@ async function pullClients(sql: postgres.Sql): Promise<number> {
   const rows = await sql<
     {
       name: string
-      billable_rate: number
       retainer_hours: number | null
       color: string
       updated_at: Date
     }[]
-  >`SELECT name, billable_rate, retainer_hours, color, updated_at FROM clients`
+  >`SELECT name, retainer_hours, color, updated_at FROM clients`
 
   let changed = 0
   for (const r of rows) {
     const result = db.upsertClientFromRemote({
       name: r.name,
-      billableRate: r.billable_rate,
       retainerHours: r.retainer_hours ?? 0,
       color: r.color,
       // Normalise to the same ISO shape the local column stores, so the string
@@ -525,7 +522,9 @@ export async function fetchTeamSummary(days: number): Promise<TeamSummary> {
            d.client_id,
            c.name  AS client_name,
            c.color AS color,
-           c.billable_rate,
+           -- The PERSON's rate, not the client's: the same hour on the same
+           -- client is worth a different amount depending on who worked it.
+           p.billable_rate,
            d.day,
            SUM(d.seconds)::int AS seconds,
            SUM(CASE WHEN d.billable THEN d.seconds ELSE 0 END)::int AS billable_seconds
@@ -533,7 +532,7 @@ export async function fetchTeamSummary(days: number): Promise<TeamSummary> {
     JOIN people p ON p.id = d.person_id
     JOIN clients c ON c.id = d.client_id
     WHERE d.day >= ${start} AND d.day <= ${end}
-    GROUP BY p.name, d.client_id, c.name, c.color, c.billable_rate, d.day
+    GROUP BY p.name, d.client_id, c.name, c.color, p.billable_rate, d.day
   `
 
   return aggregateTeam(rows, days)
@@ -588,7 +587,9 @@ export async function fetchTeamSessions(
     }[]
   >`
     SELECT p.name AS person, c.name AS client, ts.start_time, ts.end_time, ts.notes,
-           c.billable_rate, c.retainer_hours,
+           -- Rate comes from the person who worked the session; the retainer is
+           -- a commitment made to the client, so that stays on the client.
+           p.billable_rate, c.retainer_hours,
            (COALESCE(snap.total, 0) - COALESCE(exc.total, 0))::int AS active_seconds
     FROM timer_sessions ts
     JOIN people p ON p.id = ts.person_id

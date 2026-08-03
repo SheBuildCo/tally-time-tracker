@@ -19,6 +19,7 @@ import type { TimerSession, SessionActivity, ReportHistoryEntry } from '../share
 import { formatDay, formatTimeOfDay, formatHoursDecimal } from '../shared/format'
 import { sessionActiveSeconds } from './analytics'
 import { fetchTeamSessions, type TeamSessionRow } from './sync'
+import { getPersonRate } from './supabase'
 import * as db from './db'
 import { getSessionActivities } from './ingest'
 
@@ -60,7 +61,10 @@ export async function getReportData(
   return {
     clientId,
     clientName: client.name,
-    billableRate: client.billableRate,
+    // A personal report covers only this machine's own sessions, so one rate —
+    // this person's — values every row. The team report can't assume that and
+    // carries a rate per session instead.
+    billableRate: getPersonRate(),
     retainerHours: client.retainerHours,
     startDay,
     endDay,

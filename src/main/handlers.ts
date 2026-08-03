@@ -22,8 +22,10 @@ import {
 import { getAllRetainerStatuses, getRetainerStatus, invalidateRetainerCache } from './retainer'
 import {
   PERSON_NAME_KEY,
+  PERSON_RATE_KEY,
   SUPABASE_URL_KEY,
   getPersonName,
+  getPersonRate,
   getSupabaseUrl,
   isConfigured,
   testConnection
@@ -55,7 +57,8 @@ function readSettings(): Settings {
     awAfkWatcher: false,
     idleAutoStopMinutes: Number(
       db.getSetting('idle_auto_stop_minutes') ?? DEFAULT_IDLE_AUTO_STOP_MINUTES
-    )
+    ),
+    personRate: getPersonRate()
   }
 }
 
@@ -123,7 +126,7 @@ export function registerHandlers(ctx: HandlerContext): void {
     // Analytics
     'analytics:range': async (days: number) => {
       const rows = await getRangeRows(days)
-      return buildRangeSummary(rows, db.listClients(), days)
+      return buildRangeSummary(rows, db.listClients(), days, getPersonRate())
     },
 
     // Settings
@@ -147,6 +150,12 @@ export function registerHandlers(ctx: HandlerContext): void {
       const m = Math.round(Number(minutes))
       if (Number.isFinite(m) && m > 0) db.setSetting('idle_auto_stop_minutes', String(m))
     },
+    // This person's own hourly rate. Takes effect on the next sync, which
+    // writes it to their row in the shared `people` table.
+    'settings:setPersonRate': (rate: number) => {
+      const r = Number(rate)
+      db.setSetting(PERSON_RATE_KEY, String(Number.isFinite(r) && r > 0 ? r : 0))
+    },
     'settings:clearActivityData': () => db.clearActivityData(),
 
     // Reports (CSV only)
@@ -169,7 +178,13 @@ export function registerHandlers(ctx: HandlerContext): void {
     }),
     'team:setup': (personName: string, url: string) => {
       db.setSetting(PERSON_NAME_KEY, personName.trim())
-      db.setSetting(SUPABASE_URL_KEY, url.trim())
+      // A BLANK url means "keep what's stored" — that's what the Settings field
+      // promises ("saved, leave blank to keep"). Writing it through would erase
+      // the connection string, and because an unconfigured Tally fails soft, the
+      // only symptom is team sync silently going quiet. Saving any other change
+      // in that section (your name, your rate) used to do exactly that.
+      const next = url.trim()
+      if (next) db.setSetting(SUPABASE_URL_KEY, next)
       return { configured: isConfigured() }
     },
     'team:test': (url?: string) => testConnection(url),
@@ -221,6 +236,7 @@ export const CHANNELS = [
   'settings:updateShortcuts',
   'settings:setAutoLaunch',
   'settings:setIdleAutoStop',
+  'settings:setPersonRate',
   'settings:clearActivityData',
   'aw:health',
   'reports:generate',

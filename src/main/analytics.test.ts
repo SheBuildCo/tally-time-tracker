@@ -31,8 +31,8 @@ function session(
 }
 
 const clients: Client[] = [
-  { id: 1, name: 'Client A', billableRate: 100, retainerHours: 0, color: '#111' },
-  { id: 2, name: 'Client B', billableRate: 200, retainerHours: 40, color: '#222' }
+  { id: 1, name: 'Client A', retainerHours: 0, color: '#111' },
+  { id: 2, name: 'Client B', retainerHours: 40, color: '#222' }
 ]
 
 describe('applySessionOverrides', () => {
@@ -170,7 +170,9 @@ describe('sessionActiveSeconds', () => {
 })
 
 describe('buildRangeSummary', () => {
-  it('computes billable amount from client rate', () => {
+  // The rate belongs to the PERSON now, so one rate values every row here —
+  // a personal summary only ever covers this machine's own time.
+  it('computes billable amount from the person rate', () => {
     const events = [
       evt({ timestamp: '2026-07-08T10:00:00.000Z', duration: 3600, app: 'code.exe', title: 'work' })
     ]
@@ -183,10 +185,10 @@ describe('buildRangeSummary', () => {
     })
     categorized = applySessionOverrides(categorized, [s], new Map())
     const rows = rollup(categorized, '2026-07-08')
-    const summary = buildRangeSummary(rows, clients, 1)
+    const summary = buildRangeSummary(rows, clients, 1, 200)
     const clientB = summary.clients.find((c) => c.clientId === 2)!
     expect(clientB.billableSeconds).toBe(3600)
-    expect(clientB.amount).toBe(200) // 1h * $200
+    expect(clientB.amount).toBe(200) // 1h * $200/hr, this person's rate
   })
 })
 

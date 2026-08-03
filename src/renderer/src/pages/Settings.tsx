@@ -60,6 +60,7 @@ function ShortcutInput({
 function TeamSyncSection(): React.JSX.Element {
   const [status, setStatus] = useState<TeamStatus | null>(null)
   const [person, setPerson] = useState('')
+  const [rate, setRate] = useState('')
   const [url, setUrl] = useState('')
   const [busy, setBusy] = useState<'test' | 'save' | 'sync' | null>(null)
   const [result, setResult] = useState<{ ok: boolean; message: string } | null>(null)
@@ -69,6 +70,7 @@ function TeamSyncSection(): React.JSX.Element {
       setStatus(s)
       setPerson(s.personName ?? '')
     })
+    api.getSettings().then((s) => setRate(s.personRate ? String(s.personRate) : ''))
   }, [])
 
   async function test(): Promise<void> {
@@ -96,6 +98,7 @@ function TeamSyncSection(): React.JSX.Element {
         return
       }
       await api.teamSetup(person.trim(), url.trim() || '')
+      await api.setPersonRate(Number(rate) || 0)
       setStatus(await api.teamStatus())
       setUrl('') // don't keep the secret in component state once stored
       setResult({ ok: true, message: 'Saved. Your time will sync every few minutes.' })
@@ -147,6 +150,22 @@ function TeamSyncSection(): React.JSX.Element {
           />
           <p className="mt-1 text-xs text-slate-500">
             How your time is labelled for the team. Use the same name every time.
+          </p>
+        </div>
+
+        <div>
+          <label className="mb-1 block text-sm font-medium">Your rate / hr</label>
+          <input
+            value={rate}
+            onChange={(e) => setRate(e.target.value)}
+            type="number"
+            placeholder="150"
+            className="w-40 rounded-md border border-slate-300 px-3 py-1.5 text-sm"
+          />
+          <p className="mt-1 text-xs text-slate-500">
+            The rate <strong>your</strong> time is billed at — we each have our own, which is why
+            it lives here and not on the client. Only you can change yours. Leave blank if your
+            time shouldn’t be valued.
           </p>
         </div>
 

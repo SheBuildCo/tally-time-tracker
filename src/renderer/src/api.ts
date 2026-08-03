@@ -60,6 +60,8 @@ export const api = {
     invoke<void>('settings:updateShortcuts', toggle, picker),
   setAutoLaunch: (enabled: boolean) => invoke<void>('settings:setAutoLaunch', enabled),
   setIdleAutoStop: (minutes: number) => invoke<void>('settings:setIdleAutoStop', minutes),
+  // This person's hourly rate; reaches the team on the next sync.
+  setPersonRate: (rate: number) => invoke<void>('settings:setPersonRate', rate),
   clearActivityData: () => invoke<void>('settings:clearActivityData'),
 
   // Reports (CSV only)

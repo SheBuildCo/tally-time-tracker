@@ -108,10 +108,14 @@ export function rollup(categorized: Categorized[], day: string): DailyActivityRo
 
 // ---- Summaries ----
 
+// `rate` is THIS person's hourly rate — every row here is their own time, so
+// one rate values the lot. (The team view can't do this: it spans people on
+// different rates, so it carries a rate per row instead. See aggregateTeam.)
 export function buildRangeSummary(
   rows: DailyActivityRow[],
   clients: Client[],
-  days: number
+  days: number,
+  rate: number
 ): RangeSummary {
   const clientById = new Map(clients.map((c) => [c.id, c]))
 
@@ -140,7 +144,6 @@ export function buildRangeSummary(
     if (row.billable) s.billableSeconds += row.seconds
   }
   for (const s of summaryMap.values()) {
-    const rate = s.clientId != null ? (clientById.get(s.clientId)?.billableRate ?? 0) : 0
     s.amount = (s.billableSeconds / 3600) * rate
   }
 

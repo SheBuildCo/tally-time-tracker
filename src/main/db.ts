@@ -182,11 +182,11 @@ function seedIfEmpty(): void {
   if (count.n > 0) return
 
   const insertClient = db.prepare(
-    'INSERT INTO clients (name, billable_rate, retainer_hours, color) VALUES (?, ?, ?, ?)'
+    'INSERT INTO clients (name, retainer_hours, color) VALUES (?, ?, ?)'
   )
-  const internal = insertClient.run('Internal / Admin', 0, 0, '#64748b').lastInsertRowid as number
-  insertClient.run('Example Client A', 150, 0, '#6366f1')
-  insertClient.run('Example Client B', 120, 0, '#10b981')
+  const internal = insertClient.run('Internal / Admin', 0, '#64748b').lastInsertRowid as number
+  insertClient.run('Example Client A', 0, '#6366f1')
+  insertClient.run('Example Client B', 0, '#10b981')
 
   // A couple of starter rules mapping common internal apps to Internal/Admin.
   const insertRule = db.prepare(
@@ -206,17 +206,13 @@ function seedIfEmpty(): void {
 
 // ---- Clients ----
 
-function rowToClient(r: {
-  id: number
-  name: string
-  billable_rate: number
-  retainer_hours: number
-  color: string
-}): Client {
+// NB: the clients table still HAS a billable_rate column. It's legacy — rates
+// moved onto people — and is deliberately left in place rather than dropped so
+// the old values survive if we ever need them. Nothing reads or writes it.
+function rowToClient(r: { id: number; name: string; retainer_hours: number; color: string }): Client {
   return {
     id: r.id,
     name: r.name,
-    billableRate: r.billable_rate,
     retainerHours: r.retainer_hours,
     color: r.color
   }
@@ -234,16 +230,8 @@ export function getClient(id: number): Client | null {
 
 export function createClient(input: Omit<Client, 'id'>): Client {
   const info = db
-    .prepare(
-      'INSERT INTO clients (name, billable_rate, retainer_hours, color, updated_at) VALUES (?, ?, ?, ?, ?)'
-    )
-    .run(
-      input.name,
-      input.billableRate,
-      input.retainerHours ?? 0,
-      input.color,
-      new Date().toISOString()
-    )
+    .prepare('INSERT INTO clients (name, retainer_hours, color, updated_at) VALUES (?, ?, ?, ?)')
+    .run(input.name, input.retainerHours ?? 0, input.color, new Date().toISOString())
   return getClient(info.lastInsertRowid as number)!
 }
 
@@ -254,15 +242,8 @@ export function updateClient(id: number, input: Partial<Omit<Client, 'id'>>): Cl
   // Stamping updated_at is what makes this edit beat every other machine's copy
   // on the next sync — see pushClients in sync.ts.
   db.prepare(
-    'UPDATE clients SET name = ?, billable_rate = ?, retainer_hours = ?, color = ?, updated_at = ? WHERE id = ?'
-  ).run(
-    merged.name,
-    merged.billableRate,
-    merged.retainerHours,
-    merged.color,
-    new Date().toISOString(),
-    id
-  )
+    'UPDATE clients SET name = ?, retainer_hours = ?, color = ?, updated_at = ? WHERE id = ?'
+  ).run(merged.name, merged.retainerHours, merged.color, new Date().toISOString(), id)
   return getClient(id)
 }
 
@@ -292,7 +273,6 @@ export function listClientsForSync(): ClientSyncRow[] {
  */
 export function upsertClientFromRemote(remote: {
   name: string
-  billableRate: number
   retainerHours: number
   color: string
   updatedAt: string
@@ -300,14 +280,14 @@ export function upsertClientFromRemote(remote: {
   const existing = db.prepare('SELECT * FROM clients WHERE name = ?').get(remote.name) as any
   if (!existing) {
     db.prepare(
-      'INSERT INTO clients (name, billable_rate, retainer_hours, color, updated_at) VALUES (?, ?, ?, ?, ?)'
-    ).run(remote.name, remote.billableRate, remote.retainerHours, remote.color, remote.updatedAt)
+      'INSERT INTO clients (name, retainer_hours, color, updated_at) VALUES (?, ?, ?, ?)'
+    ).run(remote.name, remote.retainerHours, remote.color, remote.updatedAt)
     return 'created'
   }
   if (remote.updatedAt <= existing.updated_at) return 'unchanged'
   db.prepare(
-    'UPDATE clients SET billable_rate = ?, retainer_hours = ?, color = ?, updated_at = ? WHERE id = ?'
-  ).run(remote.billableRate, remote.retainerHours, remote.color, remote.updatedAt, existing.id)
+    'UPDATE clients SET retainer_hours = ?, color = ?, updated_at = ? WHERE id = ?'
+  ).run(remote.retainerHours, remote.color, remote.updatedAt, existing.id)
   return 'updated'
 }
 

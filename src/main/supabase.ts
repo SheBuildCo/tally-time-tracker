@@ -14,6 +14,7 @@ import { getSetting } from './db'
 
 export const SUPABASE_URL_KEY = 'supabase_url'
 export const PERSON_NAME_KEY = 'person_name'
+export const PERSON_RATE_KEY = 'person_rate'
 
 let sql: postgres.Sql | null = null
 let cachedUrl: string | null = null
@@ -28,6 +29,22 @@ export function getSupabaseUrl(): string | null {
 export function getPersonName(): string | null {
   const v = getSetting(PERSON_NAME_KEY)
   return v && v.trim() ? v.trim() : null
+}
+
+/**
+ * THIS person's hourly rate. The team bills at different rates (a senior hour
+ * is not a junior hour), so the rate belongs to the person, not the client — an
+ * hour on the same client is worth a different amount depending on who worked
+ * it. 0 means "don't value my time", which reports render as blank rather than
+ * $0.00.
+ *
+ * Each machine only ever writes its OWN person's rate (see ensurePersonId), so
+ * unlike the old client rate it is structurally impossible for one teammate to
+ * overwrite another's.
+ */
+export function getPersonRate(): number {
+  const v = Number(getSetting(PERSON_RATE_KEY) ?? 0)
+  return Number.isFinite(v) && v > 0 ? v : 0
 }
 
 /** True when both the connection string and the person's name are configured. */
@@ -137,9 +154,13 @@ export function friendlyError(err: unknown): string {
  * is the same person.
  */
 export async function ensurePersonId(sql: postgres.Sql, name: string): Promise<number> {
+  // The rate rides along because this is the one place a machine writes its own
+  // people row — and its own is the ONLY row it ever writes, which is what keeps
+  // one teammate's rate from clobbering another's.
+  const rate = getPersonRate()
   const [row] = await sql<{ id: number }[]>`
-    INSERT INTO people (name) VALUES (${name})
-    ON CONFLICT (name) DO UPDATE SET name = excluded.name
+    INSERT INTO people (name, billable_rate) VALUES (${name}, ${rate})
+    ON CONFLICT (name) DO UPDATE SET billable_rate = excluded.billable_rate
     RETURNING id
   `
   return row.id
