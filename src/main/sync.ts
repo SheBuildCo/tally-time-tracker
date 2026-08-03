@@ -16,11 +16,15 @@
 
 import * as db from './db'
 import { connect, ensurePersonId, friendlyError, getPersonName, isConfigured } from './supabase'
-import type { ClientSummary, DailyTotal, TeamMemberSummary, TeamSummary } from '../shared/types'
+import { localDayISO } from '../shared/format'
+import type {
+  ClientSummary,
+  DailyTotal,
+  TeamMemberSummary,
+  TeamSummary,
+  TimerSession
+} from '../shared/types'
 import type postgres from 'postgres'
-
-/** The shared schema's sentinel for "no client" (Postgres PKs reject NULL). */
-const NO_CLIENT = -1
 
 /** Trailing days pushed on each sync. Recent days are the ones that change. */
 const SYNC_DAYS = 7
@@ -31,6 +35,7 @@ export interface SyncResult {
   pushedDays?: number
   pushedRows?: number
   pushedSessions?: number
+  pulledClients?: number // clients created or updated from the shared database
   at: string
 }
 
@@ -41,13 +46,13 @@ export function getLastSyncResult(): SyncResult | null {
   return lastResult
 }
 
-/** Inclusive list of UTC day strings ending today. Mirrors ingest.ts's shape. */
+/** Inclusive list of local day strings ending today. Mirrors ingest.ts's shape. */
 function recentDays(days: number): string[] {
   const out: string[] = []
-  const today = new Date()
+  const now = new Date()
   for (let i = days - 1; i >= 0; i--) {
-    const d = new Date(today.getTime() - i * 86400000)
-    out.push(d.toISOString().slice(0, 10))
+    const d = new Date(now.getFullYear(), now.getMonth(), now.getDate() - i)
+    out.push(localDayISO(d))
   }
   return out
 }
@@ -59,17 +64,180 @@ function recentDays(days: number): string[] {
  */
 async function pushClients(sql: postgres.Sql): Promise<Map<number, number>> {
   const map = new Map<number, number>()
-  for (const c of db.listClients()) {
+  for (const c of db.listClientsForSync()) {
+    // LAST EDIT WINS, and only a real edit counts. This predicate is the whole
+    // point: every machine pushes its entire client list on every sync, so an
+    // unconditional upsert meant the last machine to sync overwrote whatever a
+    // teammate had just set — a retainer edited on one laptop was silently
+    // reverted 90 seconds later by another laptop's untouched copy.
     const [row] = await sql<{ id: number }[]>`
-      INSERT INTO clients (name, billable_rate, color)
-      VALUES (${c.name}, ${c.billableRate}, ${c.color})
+      INSERT INTO clients (name, retainer_hours, color, updated_at)
+      VALUES (${c.name}, ${c.retainerHours}, ${c.color}, ${c.updatedAt})
       ON CONFLICT (name) DO UPDATE SET
-        billable_rate = excluded.billable_rate, color = excluded.color
+        retainer_hours = excluded.retainer_hours,
+        color = excluded.color,
+        updated_at = excluded.updated_at
+      WHERE clients.updated_at < excluded.updated_at
       RETURNING id
     `
-    map.set(c.id, row.id)
+    // A skipped DO UPDATE returns no row, so the id still has to be looked up —
+    // the local -> shared id map must cover every client either way.
+    if (row) {
+      map.set(c.id, row.id)
+      continue
+    }
+    const [existing] = await sql<{ id: number }[]>`SELECT id FROM clients WHERE name = ${c.name}`
+    if (existing) map.set(c.id, existing.id)
   }
   return map
+}
+
+/**
+ * Bring the shared client list down into local SQLite: clients a teammate added
+ * appear here, and their newer edits to a rate or retainer replace ours.
+ *
+ * Additive on purpose — a client missing locally is created, but a client
+ * missing REMOTELY is never deleted. Deleting cascades away sessions and report
+ * history (see the FKs in db.ts), so a delete propagating across the team would
+ * be unrecoverable; removing a client stays a deliberate, local act.
+ *
+ * Runs before the push so that within one sync we adopt the team's truth first
+ * and then contribute anything genuinely newer of our own.
+ */
+async function pullClients(sql: postgres.Sql): Promise<number> {
+  const rows = await sql<
+    {
+      name: string
+      retainer_hours: number | null
+      color: string
+      updated_at: Date
+    }[]
+  >`SELECT name, retainer_hours, color, updated_at FROM clients`
+
+  let changed = 0
+  for (const r of rows) {
+    const result = db.upsertClientFromRemote({
+      name: r.name,
+      retainerHours: r.retainer_hours ?? 0,
+      color: r.color,
+      // Normalise to the same ISO shape the local column stores, so the string
+      // comparison in upsertClientFromRemote is a valid time comparison.
+      updatedAt: new Date(r.updated_at).toISOString()
+    })
+    if (result !== 'unchanged') changed++
+  }
+  return changed
+}
+
+export type RenameRemoteResult = 'ok' | 'name-taken' | 'skipped' | 'failed'
+
+/**
+ * Rename a client in the shared database so the team's existing history follows
+ * the new name. Necessary because clients are joined by name (see the header):
+ * without this, a local rename silently strands every teammate's tracked time
+ * under the old name and starts a second shared client.
+ *
+ * Fail-soft like deleteRemoteSession — the local rename has already succeeded
+ * and must not be undone by a network problem. 'name-taken' means the shared
+ * database already had a different client under the new name (UNIQUE), which the
+ * caller surfaces to the user rather than silently merging the two.
+ */
+export async function renameRemoteClient(
+  oldName: string,
+  newName: string
+): Promise<RenameRemoteResult> {
+  if (!isConfigured()) return 'skipped'
+  try {
+    const sql = connect()
+    if (!sql) return 'skipped'
+    const existing = await sql<{ id: number }[]>`SELECT id FROM clients WHERE name = ${newName}`
+    if (existing.length > 0) return 'name-taken'
+    await sql`UPDATE clients SET name = ${newName} WHERE name = ${oldName}`
+    return 'ok'
+  } catch (err) {
+    console.error('[sync] failed to rename remote client', oldName, '->', newName, err)
+    return 'failed'
+  }
+}
+
+/**
+ * Total active seconds the WHOLE TEAM has tracked for one client (matched by
+ * name) over [startISO, endISO]. Scalar counterpart to fetchTeamSessions, using
+ * the identical snapshot-minus-exclusions join so the retainer readout and a
+ * team report can never disagree.
+ *
+ * Only completed sessions count — an in-progress session isn't pushed until it
+ * stops — so callers showing a live figure add the running elapsed themselves.
+ */
+export async function fetchClientUsedSeconds(
+  clientName: string,
+  startISO: string,
+  endISO: string
+): Promise<number> {
+  const sql = connect()
+  if (!sql) throw new Error('Team sync is not set up yet.')
+
+  const [row] = await sql<{ active_seconds: number }[]>`
+    SELECT COALESCE(SUM(
+             COALESCE(snap.total, 0) - COALESCE(exc.total, 0)
+           ), 0)::int AS active_seconds
+    FROM timer_sessions ts
+    JOIN clients c ON c.id = ts.client_id
+    LEFT JOIN (
+      SELECT session_id, SUM(seconds) AS total
+      FROM session_activity_snapshot GROUP BY session_id
+    ) snap ON snap.session_id = ts.id
+    LEFT JOIN (
+      SELECT sas.session_id, SUM(sas.seconds) AS total
+      FROM session_activity_snapshot sas
+      JOIN session_exclusions se
+        ON se.session_id = sas.session_id AND se.app = sas.app
+       AND se.host = sas.host AND se.activity = sas.activity
+      GROUP BY sas.session_id
+    ) exc ON exc.session_id = ts.id
+    WHERE c.name = ${clientName}
+      AND ts.end_time IS NOT NULL
+      AND ts.start_time >= ${startISO} AND ts.start_time <= ${endISO}
+  `
+  return Math.max(0, row?.active_seconds ?? 0)
+}
+
+/**
+ * fetchClientUsedSeconds for every client at once, keyed by client name. The
+ * dashboard shows a retainer position per row, and one round trip per client
+ * would put the whole team's Postgres connection budget behind a page render.
+ */
+export async function fetchAllClientsUsedSeconds(
+  startISO: string,
+  endISO: string
+): Promise<Map<string, number>> {
+  const sql = connect()
+  if (!sql) throw new Error('Team sync is not set up yet.')
+
+  const rows = await sql<{ name: string; active_seconds: number }[]>`
+    SELECT c.name AS name,
+           COALESCE(SUM(
+             COALESCE(snap.total, 0) - COALESCE(exc.total, 0)
+           ), 0)::int AS active_seconds
+    FROM timer_sessions ts
+    JOIN clients c ON c.id = ts.client_id
+    LEFT JOIN (
+      SELECT session_id, SUM(seconds) AS total
+      FROM session_activity_snapshot GROUP BY session_id
+    ) snap ON snap.session_id = ts.id
+    LEFT JOIN (
+      SELECT sas.session_id, SUM(sas.seconds) AS total
+      FROM session_activity_snapshot sas
+      JOIN session_exclusions se
+        ON se.session_id = sas.session_id AND se.app = sas.app
+       AND se.host = sas.host AND se.activity = sas.activity
+      GROUP BY sas.session_id
+    ) exc ON exc.session_id = ts.id
+    WHERE ts.end_time IS NOT NULL
+      AND ts.start_time >= ${startISO} AND ts.start_time <= ${endISO}
+    GROUP BY c.name
+  `
+  return new Map(rows.map((r) => [r.name, Math.max(0, r.active_seconds)]))
 }
 
 /** Rows per INSERT. Big enough to be fast, small enough to stay under limits. */
@@ -104,7 +272,13 @@ export function toSharedRows(
 ): ActivityInsert[] {
   const merged = new Map<string, ActivityInsert>()
   for (const r of local) {
-    const client_id = r.clientId == null ? NO_CLIENT : (clientMap.get(r.clientId) ?? NO_CLIENT)
+    // Unassigned time is not tracked any more, so a local row should always have
+    // a client. Defensively skip anything unattributed or referencing a client
+    // that isn't in the shared database (e.g. deleted) rather than inventing a
+    // sentinel — the team view never shows "unassigned".
+    if (r.clientId == null) continue
+    const client_id = clientMap.get(r.clientId)
+    if (client_id == null) continue
     const key = `${client_id}|${r.app}|${r.activity}|${r.host}`
     const existing = merged.get(key)
     if (existing) {
@@ -242,6 +416,33 @@ async function pushSessions(
 }
 
 /**
+ * Remove a session from the shared database (e.g. the user deleted it locally).
+ * Keyed on (person, start_time) — the same identity pushSessions writes under.
+ * Postgres ON DELETE CASCADE removes the shared snapshot + exclusions too.
+ *
+ * Fail-soft: a no-op (returns true) when team sync isn't configured, and returns
+ * false rather than throwing on any error — the local delete must still succeed
+ * even if the shared copy can't be reached right now.
+ */
+export async function deleteRemoteSession(session: TimerSession): Promise<boolean> {
+  if (!isConfigured()) return true
+  try {
+    const sql = connect()
+    const person = getPersonName()
+    if (!sql || !person) return true
+    const personId = await ensurePersonId(sql, person)
+    await sql`
+      DELETE FROM timer_sessions
+      WHERE person_id = ${personId} AND start_time = ${session.startTime}
+    `
+    return true
+  } catch (err) {
+    console.error('[sync] failed to delete remote session', session.id, err)
+    return false
+  }
+}
+
+/**
  * Push the recent window to the shared database. Safe to call often: it's a
  * no-op when unconfigured, and never throws — tracking must not depend on it.
  */
@@ -263,17 +464,22 @@ export async function syncNow(days = SYNC_DAYS): Promise<SyncResult> {
     }
 
     const personId = await ensurePersonId(sql, person)
+    // Pull before push: adopt the team's client list first, then contribute
+    // anything of ours that's genuinely newer.
+    const pulledClients = await pullClients(sql)
     const clientMap = await pushClients(sql)
     const window = recentDays(days)
     const pushedRows = await pushActivity(sql, personId, clientMap, window)
     const pushedSessions = await pushSessions(sql, personId, clientMap, window)
 
+    const clientNote = pulledClients > 0 ? ` Updated ${pulledClients} clients from the team.` : ''
     return (lastResult = {
       ok: true,
-      message: `Synced ${pushedRows} activities and ${pushedSessions} sessions across ${window.length} days.`,
+      message: `Synced ${pushedRows} activities and ${pushedSessions} sessions across ${window.length} days.${clientNote}`,
       pushedDays: window.length,
       pushedRows,
       pushedSessions,
+      pulledClients,
       at: new Date().toISOString()
     })
   } catch (err) {
@@ -316,18 +522,107 @@ export async function fetchTeamSummary(days: number): Promise<TeamSummary> {
            d.client_id,
            c.name  AS client_name,
            c.color AS color,
-           c.billable_rate,
+           -- The PERSON's rate, not the client's: the same hour on the same
+           -- client is worth a different amount depending on who worked it.
+           p.billable_rate,
            d.day,
            SUM(d.seconds)::int AS seconds,
            SUM(CASE WHEN d.billable THEN d.seconds ELSE 0 END)::int AS billable_seconds
     FROM daily_activity d
     JOIN people p ON p.id = d.person_id
-    LEFT JOIN clients c ON c.id = d.client_id
+    JOIN clients c ON c.id = d.client_id
     WHERE d.day >= ${start} AND d.day <= ${end}
-    GROUP BY p.name, d.client_id, c.name, c.color, c.billable_rate, d.day
+    GROUP BY p.name, d.client_id, c.name, c.color, p.billable_rate, d.day
   `
 
   return aggregateTeam(rows, days)
+}
+
+// ---- Team reports (shared DB, per-session) ----
+
+/** Team member names in the shared DB, for the Reports "Who" selector. */
+export async function listTeamPeople(): Promise<string[]> {
+  const sql = connect()
+  if (!sql) return []
+  const rows = await sql<{ name: string }[]>`SELECT name FROM people ORDER BY name`
+  return rows.map((r) => r.name)
+}
+
+export interface TeamSessionRow {
+  person: string
+  client: string
+  startTime: string
+  endTime: string | null
+  notes: string | null
+  billableRate: number
+  retainerHours: number
+  activeSeconds: number
+}
+
+/**
+ * Sessions for one client (matched by name — shared ids differ from local),
+ * across the whole team or a single `person`, over [startISO, endISO]. Each
+ * session's active seconds are computed in SQL to mirror sessionActiveSeconds:
+ * its snapshot total minus the total of any excluded activities.
+ */
+export async function fetchTeamSessions(
+  clientName: string,
+  startISO: string,
+  endISO: string,
+  person?: string
+): Promise<TeamSessionRow[]> {
+  const sql = connect()
+  if (!sql) throw new Error('Team sync is not set up yet.')
+
+  const rows = await sql<
+    {
+      person: string
+      client: string
+      start_time: string
+      end_time: string | null
+      notes: string | null
+      billable_rate: number | null
+      retainer_hours: number | null
+      active_seconds: number
+    }[]
+  >`
+    SELECT p.name AS person, c.name AS client, ts.start_time, ts.end_time, ts.notes,
+           -- Rate comes from the person who worked the session; the retainer is
+           -- a commitment made to the client, so that stays on the client.
+           p.billable_rate, c.retainer_hours,
+           (COALESCE(snap.total, 0) - COALESCE(exc.total, 0))::int AS active_seconds
+    FROM timer_sessions ts
+    JOIN people p ON p.id = ts.person_id
+    JOIN clients c ON c.id = ts.client_id
+    LEFT JOIN (
+      SELECT session_id, SUM(seconds) AS total
+      FROM session_activity_snapshot GROUP BY session_id
+    ) snap ON snap.session_id = ts.id
+    LEFT JOIN (
+      SELECT sas.session_id, SUM(sas.seconds) AS total
+      FROM session_activity_snapshot sas
+      JOIN session_exclusions se
+        ON se.session_id = sas.session_id AND se.app = sas.app
+       AND se.host = sas.host AND se.activity = sas.activity
+      GROUP BY sas.session_id
+    ) exc ON exc.session_id = ts.id
+    WHERE c.name = ${clientName}
+      AND ts.end_time IS NOT NULL
+      AND ts.start_time >= ${startISO} AND ts.start_time <= ${endISO}
+      ${person ? sql`AND p.name = ${person}` : sql``}
+    ORDER BY ts.start_time
+  `
+
+  return rows.map((r) => ({
+    person: r.person,
+    client: r.client,
+    startTime: r.start_time,
+    endTime: r.end_time,
+    notes: r.notes,
+    billableRate: r.billable_rate ?? 0,
+    retainerHours: r.retainer_hours ?? 0,
+    activeSeconds: r.active_seconds
+  }))
 }
 
 type TeamRow = {
@@ -343,11 +638,11 @@ type TeamRow = {
 
 /** Pure aggregation, split out so it can be unit-tested without a database. */
 export function aggregateTeam(rows: TeamRow[], days: number): TeamSummary {
-  const key = (id: number): number | null => (id === NO_CLIENT ? null : id)
-
+  // Every row is client-attributed now (the query inner-joins clients and
+  // unassigned time is never stored), so there is no sentinel to unmap.
   const blankClient = (r: TeamRow): ClientSummary => ({
-    clientId: key(r.client_id),
-    clientName: r.client_name ?? 'Unassigned',
+    clientId: r.client_id,
+    clientName: r.client_name ?? `Client #${r.client_id}`,
     color: r.color ?? '#94a3b8',
     seconds: 0,
     billableSeconds: 0,
@@ -355,7 +650,7 @@ export function aggregateTeam(rows: TeamRow[], days: number): TeamSummary {
   })
 
   const people = new Map<string, TeamMemberSummary>()
-  const clients = new Map<number | null, ClientSummary>()
+  const clients = new Map<number, ClientSummary>()
   const daily = new Map<string, DailyTotal>()
   let totalSeconds = 0
   let billableSeconds = 0
@@ -373,7 +668,7 @@ export function aggregateTeam(rows: TeamRow[], days: number): TeamSummary {
     m.seconds += r.seconds
     m.billableSeconds += r.billable_seconds
     m.amount += amount
-    let mc = m.clients.find((c) => c.clientId === key(r.client_id))
+    let mc = m.clients.find((c) => c.clientId === r.client_id)
     if (!mc) {
       mc = blankClient(r)
       m.clients.push(mc)
@@ -383,10 +678,10 @@ export function aggregateTeam(rows: TeamRow[], days: number): TeamSummary {
     mc.amount += amount
 
     // Team-wide per client.
-    let c = clients.get(key(r.client_id))
+    let c = clients.get(r.client_id)
     if (!c) {
       c = blankClient(r)
-      clients.set(key(r.client_id), c)
+      clients.set(r.client_id, c)
     }
     c.seconds += r.seconds
     c.billableSeconds += r.billable_seconds
@@ -399,9 +694,9 @@ export function aggregateTeam(rows: TeamRow[], days: number): TeamSummary {
       daily.set(r.day, d)
     }
     d.seconds += r.seconds
-    const existing = d.byClient.find((b) => b.clientId === key(r.client_id))
+    const existing = d.byClient.find((b) => b.clientId === r.client_id)
     if (existing) existing.seconds += r.seconds
-    else d.byClient.push({ clientId: key(r.client_id), seconds: r.seconds })
+    else d.byClient.push({ clientId: r.client_id, seconds: r.seconds })
 
     totalSeconds += r.seconds
     billableSeconds += r.billable_seconds

@@ -1,18 +1,34 @@
 import { app, BrowserWindow } from 'electron'
 import { electronApp, optimizer } from '@electron-toolkit/utils'
-import { initDb } from './db'
-import { initTimer } from './timer'
+import { initDb, getClient } from './db'
+import { initTimer, getState, onStateChange } from './timer'
 import { registerHandlers } from './handlers'
 import { registerShortcuts, unregisterShortcuts } from './shortcuts'
 import { createTray, destroyTray } from './tray'
-import { createMainWindow, showMainWindow, openPicker, closePicker } from './windows'
+import {
+  createMainWindow,
+  showMainWindow,
+  openPicker,
+  closePicker,
+  openPinned,
+  closePinned
+} from './windows'
 import { syncNow } from './sync'
+import { invalidateRetainerCache } from './retainer'
 import { disconnect } from './supabase'
 
-// How often each machine pushes its time to the shared team database. Generous
-// on purpose: the data is a daily rollup, so minute-level freshness buys
-// nothing, and this runs on every teammate's machine against one small database.
-const SYNC_INTERVAL_MS = 5 * 60 * 1000
+// The pinned widget only reserves space for the retainer line when the client
+// actually has one.
+function hasRetainer(clientId: number): boolean {
+  return (getClient(clientId)?.retainerHours ?? 0) > 0
+}
+
+// How often each machine pushes its time to the shared team database. Kept
+// short because the live retainer readout reads the team's usage back out of
+// this database: stale pushes mean a teammate's hours are missing from the
+// "hours left" figure someone else is looking at right now. Still cheap — one
+// small database, a trailing few days of rows per push.
+const SYNC_INTERVAL_MS = 90 * 1000
 
 // Single-instance lock: a second launch just focuses the running app.
 const gotLock = app.requestSingleInstanceLock()
@@ -30,9 +46,17 @@ if (!gotLock) {
   // Push to the shared team database in the background. No-ops when team sync
   // isn't configured, and syncNow() never throws — tracking must never depend
   // on the network being up.
+  //
+  // The window narrows after the first push: startup does the full catch-up (in
+  // case the machine was offline for days), while the frequent ticks only cover
+  // today and yesterday. Older days can't change without the app running, and
+  // re-pushing a week of sessions every 90s on every teammate's machine would be
+  // a lot of work to rewrite rows that are already correct.
   function startTeamSync(): void {
-    void syncNow()
-    syncTimer = setInterval(() => void syncNow(), SYNC_INTERVAL_MS)
+    const run = (days?: number): void =>
+      void syncNow(days).then(() => invalidateRetainerCache())
+    run()
+    syncTimer = setInterval(() => run(2), SYNC_INTERVAL_MS)
   }
 
   function setAutoLaunch(enabled: boolean): void {
@@ -66,6 +90,23 @@ if (!gotLock) {
 
     createMainWindow(startHidden)
     startTeamSync()
+
+    // Pinned timer widget: visible only while a timer runs. Driven by timer
+    // state changes, plus an initial check in case a session was rehydrated on
+    // boot (initTimer sets state without broadcasting).
+    onStateChange((s) => {
+      if (s.status === 'running') {
+        openPinned(hasRetainer(s.clientId))
+      } else {
+        closePinned()
+        // A session just finished: push it immediately so everyone else's
+        // retainer readout reflects it within seconds rather than at the next
+        // interval. One day's window is enough and keeps the push cheap.
+        void syncNow(1).then(() => invalidateRetainerCache())
+      }
+    })
+    const boot = getState()
+    if (boot.status === 'running') openPinned(hasRetainer(boot.clientId))
 
     app.on('activate', () => {
       if (BrowserWindow.getAllWindows().length === 0) createMainWindow(false)

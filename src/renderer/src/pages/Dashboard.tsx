@@ -1,24 +1,30 @@
-import { useEffect, useState } from 'react'
-import type { ClientSummary, RangeSummary, TeamSummary } from '@shared/types'
+import { useEffect, useMemo, useState } from 'react'
+import type { ClientSummary, RangeSummary, RetainerStatus, TeamSummary } from '@shared/types'
 import { api } from '../api'
-import { formatDuration, formatCurrency } from '../format'
+import { formatDuration, formatCurrency, formatHoursShort, periodDays, periodLabel } from '../format'
+import type { Period } from '../format'
 import { useStore } from '../store'
 
-const RANGES = [
-  { label: '7 days', days: 7 },
-  { label: '14 days', days: 14 },
-  { label: '30 days', days: 30 }
-]
+// Calendar-aligned, not rolling. A retainer resets on the 1st, so a trailing
+// "7 days" viewed early in the month spans two retainer periods and can't be
+// read against the included hours — see the note in shared/format.ts.
+const PERIODS: Period[] = ['week', 'month']
 
 export function Dashboard(): React.JSX.Element {
-  const [days, setDays] = useState(7)
+  const [period, setPeriod] = useState<Period>('month')
   const [scope, setScope] = useState<'mine' | 'team'>('mine')
   const [summary, setSummary] = useState<RangeSummary | null>(null)
   const [team, setTeam] = useState<TeamSummary | null>(null)
+  const [retainers, setRetainers] = useState<RetainerStatus[]>([])
   const [teamError, setTeamError] = useState<string | null>(null)
   const [teamEnabled, setTeamEnabled] = useState(false)
   const [loading, setLoading] = useState(true)
   const timer = useStore((s) => s.timer)
+
+  // The queries downstream still take a day count; deriving it from the period
+  // boundary is what makes the range calendar-aligned. Recomputed per render so
+  // an app left open overnight rolls onto the new day.
+  const days = periodDays(period)
 
   // Only offer the Team toggle once team sync is set up in Settings.
   useEffect(() => {
@@ -55,6 +61,27 @@ export function Dashboard(): React.JSX.Element {
     }
   }, [scope, days, teamEnabled, timer.status])
 
+  // Retainer positions are always the current calendar month, whatever period is
+  // selected, so this doesn't depend on `days`. Fails soft: no retainer columns
+  // is a better dashboard than no dashboard.
+  useEffect(() => {
+    let active = true
+    api
+      .retainerAll()
+      .then((r) => active && setRetainers(r))
+      .catch(() => active && setRetainers([]))
+    return () => {
+      active = false
+    }
+  }, [timer.status])
+
+  // Keyed by name because team-scoped rows carry shared-database client ids,
+  // which don't match this machine's (see the header of src/main/sync.ts).
+  const retainerByName = useMemo(
+    () => new Map(retainers.map((r) => [r.clientName, r])),
+    [retainers]
+  )
+
   return (
     <div className="mx-auto max-w-5xl space-y-6">
       <div className="flex items-center justify-between">
@@ -76,15 +103,15 @@ export function Dashboard(): React.JSX.Element {
             </div>
           )}
           <div className="flex gap-1 rounded-md border border-slate-200 bg-white p-1">
-            {RANGES.map((r) => (
+            {PERIODS.map((p) => (
               <button
-                key={r.days}
-                onClick={() => setDays(r.days)}
+                key={p}
+                onClick={() => setPeriod(p)}
                 className={`rounded px-3 py-1 text-sm ${
-                  days === r.days ? 'bg-slate-900 text-white' : 'text-slate-600 hover:bg-slate-100'
+                  period === p ? 'bg-slate-900 text-white' : 'text-slate-600 hover:bg-slate-100'
                 }`}
               >
-                {r.label}
+                {periodLabel(p)}
               </button>
             ))}
           </div>
@@ -103,6 +130,7 @@ export function Dashboard(): React.JSX.Element {
             />
             <ByClient
               clients={summary.clients}
+              retainers={retainerByName}
               empty="No activity yet. Start a timer to begin tracking."
             />
           </>
@@ -153,6 +181,7 @@ export function Dashboard(): React.JSX.Element {
 
           <ByClient
             clients={team.clients}
+            retainers={retainerByName}
             empty="No team activity in this range."
             title="By client (whole team)"
           />
@@ -182,18 +211,37 @@ function StatRow({
 
 // Shared by the personal and team views — the team summary deliberately reuses
 // RangeSummary's ClientSummary shape so this renders both unchanged.
+//
+// The three retainer columns are always THIS CALENDAR MONTH, team-wide, however
+// the period picker is set. That's the only reading that matches what a retainer
+// actually is; the Time column follows the selected period, so the two agree
+// exactly when the period is "This month" and are honestly different otherwise.
 function ByClient({
   clients,
+  retainers,
   empty,
   title = 'By client'
 }: {
   clients: ClientSummary[]
+  retainers: Map<string, RetainerStatus>
   empty: string
   title?: string
 }): React.JSX.Element {
+  // Don't spend three columns on the retainer if nobody in view has one.
+  const anyRetainer = clients.some((c) => (retainers.get(c.clientName)?.retainerHours ?? 0) > 0)
+  // A '*' anywhere means the figure is this machine's hours only.
+  const localOnly = anyRetainer && clients.some((c) => retainers.get(c.clientName)?.source === 'local')
+
   return (
     <section className="rounded-lg border border-slate-200 bg-white">
-      <h2 className="border-b border-slate-100 px-4 py-3 font-medium">{title}</h2>
+      <h2 className="flex items-baseline justify-between border-b border-slate-100 px-4 py-3 font-medium">
+        {title}
+        {anyRetainer && (
+          <span className="text-xs font-normal text-slate-500">
+            Retainer figures are this calendar month{localOnly && ', * = this machine only'}
+          </span>
+        )}
+      </h2>
       {clients.length === 0 ? (
         <p className="px-4 py-6 text-slate-500">{empty}</p>
       ) : (
@@ -203,6 +251,13 @@ function ByClient({
               <th className="px-4 py-2 font-medium">Client</th>
               <th className="px-4 py-2 font-medium">Time</th>
               <th className="px-4 py-2 font-medium">Billable</th>
+              {anyRetainer && (
+                <>
+                  <th className="px-4 py-2 text-right font-medium">Retainer</th>
+                  <th className="px-4 py-2 text-right font-medium">Used</th>
+                  <th className="px-4 py-2 text-right font-medium">Remaining</th>
+                </>
+              )}
               <th className="px-4 py-2 text-right font-medium">Value</th>
             </tr>
           </thead>
@@ -217,6 +272,7 @@ function ByClient({
                 </td>
                 <td className="px-4 py-2">{formatDuration(c.seconds)}</td>
                 <td className="px-4 py-2">{formatDuration(c.billableSeconds)}</td>
+                {anyRetainer && <RetainerCells status={retainers.get(c.clientName)} />}
                 <td className="px-4 py-2 text-right">{formatCurrency(c.amount)}</td>
               </tr>
             ))}
@@ -224,6 +280,45 @@ function ByClient({
         </table>
       )}
     </section>
+  )
+}
+
+// Retainer / Used / Remaining for one row. Blank across all three when the
+// client has no retainer, mirroring how a zero rate blanks the CSV's Amount.
+function RetainerCells({ status }: { status?: RetainerStatus }): React.JSX.Element {
+  if (!status || status.retainerHours <= 0) {
+    return (
+      <>
+        <td className="px-4 py-2" />
+        <td className="px-4 py-2" />
+        <td className="px-4 py-2" />
+      </>
+    )
+  }
+  const usedHours = status.usedSeconds / 3600
+  const remainingHours = status.retainerHours - usedHours
+  const over = remainingHours < 0
+  // Amber under 10% left — the same threshold the timer banner uses.
+  const low = !over && remainingHours < status.retainerHours * 0.1
+
+  return (
+    <>
+      <td className="px-4 py-2 text-right tabular-nums text-slate-500">
+        {formatHoursShort(status.retainerHours)} h
+      </td>
+      <td className="px-4 py-2 text-right tabular-nums">
+        {formatHoursShort(usedHours)} h{status.source === 'local' && '*'}
+      </td>
+      <td
+        className={`px-4 py-2 text-right font-medium tabular-nums ${
+          over ? 'text-red-600' : low ? 'text-amber-600' : 'text-slate-700'
+        }`}
+      >
+        {over
+          ? `${formatHoursShort(remainingHours)} h over`
+          : `${formatHoursShort(remainingHours)} h`}
+      </td>
+    </>
   )
 }
 

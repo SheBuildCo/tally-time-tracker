@@ -3,6 +3,8 @@
 
 import type {
   Client,
+  ClientUpdateResult,
+  RetainerStatus,
   MappingRule,
   TimerState,
   TimerSession,
@@ -23,7 +25,7 @@ export const api = {
   listClients: () => invoke<Client[]>('clients:list'),
   createClient: (input: Omit<Client, 'id'>) => invoke<Client>('clients:create', input),
   updateClient: (id: number, input: Partial<Omit<Client, 'id'>>) =>
-    invoke<Client | null>('clients:update', id, input),
+    invoke<ClientUpdateResult>('clients:update', id, input),
   deleteClient: (id: number) => invoke<void>('clients:delete', id),
 
   // Rules
@@ -46,6 +48,8 @@ export const api = {
     invoke<SessionExclusion>('sessions:exclude', sessionId, app, host, activity),
   includeActivity: (exclusionId: number, sessionId: number) =>
     invoke<void>('sessions:include', exclusionId, sessionId),
+  deleteSession: (id: number) =>
+    invoke<{ ok: true; remoteDeleted: boolean }>('sessions:delete', id),
 
   // Analytics
   analyticsRange: (days: number) => invoke<RangeSummary>('analytics:range', days),
@@ -55,15 +59,19 @@ export const api = {
   updateShortcuts: (toggle: string, picker: string) =>
     invoke<void>('settings:updateShortcuts', toggle, picker),
   setAutoLaunch: (enabled: boolean) => invoke<void>('settings:setAutoLaunch', enabled),
+  setIdleAutoStop: (minutes: number) => invoke<void>('settings:setIdleAutoStop', minutes),
+  // This person's hourly rate; reaches the team on the next sync.
+  setPersonRate: (rate: number) => invoke<void>('settings:setPersonRate', rate),
   clearActivityData: () => invoke<void>('settings:clearActivityData'),
 
-  // Reports
+  // Reports (CSV only)
   generateReport: (clientId: number, startDay: string, endDay: string) =>
     invoke<ReportHistoryEntry>('reports:generate', clientId, startDay, endDay),
+  // Team report from the shared DB. Omit `person` for the whole team.
+  generateTeamReport: (clientId: number, startDay: string, endDay: string, person?: string) =>
+    invoke<ReportHistoryEntry>('reports:generateTeam', clientId, startDay, endDay, person),
   listReportHistory: (clientId?: number) => invoke<ReportHistoryEntry[]>('reports:history', clientId),
   openReportFile: (path: string) => invoke<string>('reports:openFile', path),
-  getReportTemplate: () => invoke<string>('reports:getTemplate'),
-  saveReportTemplate: (html: string) => invoke<void>('reports:saveTemplate', html),
 
   // Team sync (shared database)
   teamStatus: () => invoke<TeamStatus>('team:status'),
@@ -72,6 +80,13 @@ export const api = {
   teamTest: (url?: string) => invoke<{ ok: boolean; message: string }>('team:test', url),
   teamSync: () => invoke<SyncResult>('team:sync'),
   teamSummary: (days: number) => invoke<TeamSummary>('team:summary', days),
+  teamPeople: () => invoke<string[]>('team:people'),
+
+  // Retainer. `force` bypasses the main-process 60s cache.
+  retainerStatus: (clientId: number, force?: boolean) =>
+    invoke<RetainerStatus>('retainer:status', clientId, force),
+  // Every client's position for the current calendar month, for the dashboard.
+  retainerAll: () => invoke<RetainerStatus[]>('retainer:all'),
 
   // ActivityWatch
   awHealth: () => invoke<boolean>('aw:health'),

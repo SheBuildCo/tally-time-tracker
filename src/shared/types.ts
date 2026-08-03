@@ -2,11 +2,41 @@
 // renderer (typed API wrappers, UI). Keep this file free of any runtime imports
 // so it can be pulled into either side without pulling in Node or browser deps.
 
+// A client is WHAT is worked on. Note there is no rate here: the team bills at
+// different rates per person (see Settings → your rate), so an hour on a client
+// is worth a different amount depending on who worked it. A single rate on the
+// client couldn't represent that — every machine wrote its own number into the
+// same field and they overwrote each other.
 export interface Client {
   id: number
   name: string
-  billableRate: number // currency units per hour
+  retainerHours: number // hours included per calendar month; 0 = no retainer
   color: string // hex or tailwind-ish token used for charts/badges
+}
+
+// Result of editing a client. `remoteRename` reports what happened to the copy
+// in the shared team database when the name changed: 'ok' it followed,
+// 'name-taken' the team already had a different client under that name,
+// 'skipped' team sync isn't set up, 'failed' the database was unreachable,
+// null the name didn't change.
+export interface ClientUpdateResult {
+  client: Client | null
+  remoteRename: 'ok' | 'name-taken' | 'skipped' | 'failed' | null
+}
+
+// A client's retainer position for the current calendar month. `usedSeconds`
+// counts COMPLETED sessions only, so a live timer's elapsed time is added on top
+// by the UI without double-counting.
+export interface RetainerStatus {
+  clientId: number
+  // Client ids are per-machine, so the shared database and the team dashboard
+  // key on name instead (see the header of src/main/sync.ts). Carrying the name
+  // lets a caller line a status up with a team-scoped row.
+  clientName: string
+  retainerHours: number // 0 = no retainer configured for this client
+  usedSeconds: number
+  source: 'team' | 'local' // 'local' = shared DB unreachable or not set up
+  asOf: string // ISO timestamp the figure was computed
 }
 
 export interface RuleMatch {
@@ -63,6 +93,10 @@ export interface TimerSession {
   endTime: string | null // null while running
   notes: string | null
   createdAt: string
+  // Active (AFK-filtered) tracked seconds, summed from the session's snapshot.
+  // Populated by listSessions for display; undefined elsewhere. This — not
+  // wall-clock end−start — is the real worked duration.
+  activeSeconds?: number
 }
 
 export interface SessionExclusion {
@@ -159,7 +193,6 @@ export interface ReportHistoryEntry {
   clientId: number
   startDate: string // YYYY-MM-DD
   endDate: string // YYYY-MM-DD
-  pdfPath: string
   csvPath: string
   createdAt: string
 }
@@ -169,5 +202,8 @@ export interface Settings {
   shortcutPicker: string
   autoLaunch: boolean
   trackingStartedAt: string // ISO-8601 UTC; AW history before this is never ingested
-  awStatus: boolean
+  awStatus: boolean // AW server reachable
+  awAfkWatcher: boolean // AW AFK watcher present (idle detection / accurate durations)
+  idleAutoStopMinutes: number // auto-stop a running timer after this much idle
+  personRate: number // THIS person's hourly rate; 0 = don't value their time
 }

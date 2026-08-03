@@ -14,6 +14,7 @@ import { getSetting } from './db'
 
 export const SUPABASE_URL_KEY = 'supabase_url'
 export const PERSON_NAME_KEY = 'person_name'
+export const PERSON_RATE_KEY = 'person_rate'
 
 let sql: postgres.Sql | null = null
 let cachedUrl: string | null = null
@@ -28,6 +29,22 @@ export function getSupabaseUrl(): string | null {
 export function getPersonName(): string | null {
   const v = getSetting(PERSON_NAME_KEY)
   return v && v.trim() ? v.trim() : null
+}
+
+/**
+ * THIS person's hourly rate. The team bills at different rates (a senior hour
+ * is not a junior hour), so the rate belongs to the person, not the client — an
+ * hour on the same client is worth a different amount depending on who worked
+ * it. 0 means "don't value my time", which reports render as blank rather than
+ * $0.00.
+ *
+ * Each machine only ever writes its OWN person's rate (see ensurePersonId), so
+ * unlike the old client rate it is structurally impossible for one teammate to
+ * overwrite another's.
+ */
+export function getPersonRate(): number {
+  const v = Number(getSetting(PERSON_RATE_KEY) ?? 0)
+  return Number.isFinite(v) && v > 0 ? v : 0
 }
 
 /** True when both the connection string and the person's name are configured. */
@@ -52,6 +69,11 @@ export function connect(): postgres.Sql | null {
     max: 2,
     idle_timeout: 20,
     connect_timeout: 15,
+    // Disable prepared statements so the connection-POOLER string works in
+    // either mode. Teammates must use the pooler (IPv4) string, not the direct
+    // db.<ref>.supabase.co one, which is IPv6-only and unreachable on most
+    // networks; the transaction pooler additionally rejects prepared statements.
+    prepare: false,
     onnotice: () => {}
   })
   return sql
@@ -82,7 +104,13 @@ export async function testConnection(url?: string): Promise<ConnectionCheck> {
 
   let probe: postgres.Sql | null = null
   try {
-    probe = postgres(target, { ssl: 'require', max: 1, connect_timeout: 15, onnotice: () => {} })
+    probe = postgres(target, {
+      ssl: 'require',
+      max: 1,
+      connect_timeout: 15,
+      prepare: false,
+      onnotice: () => {}
+    })
     const [row] = await probe`SELECT COUNT(*)::int AS n FROM people`
     return { ok: true, message: `Connected. ${row.n} ${row.n === 1 ? 'person' : 'people'} in the shared database.` }
   } catch (err) {
@@ -104,13 +132,18 @@ export function friendlyError(err: unknown): string {
       return 'Connected, but the tables are missing. Apply supabase/schema.sql first.'
     case 'ENOTFOUND':
     case 'EAI_AGAIN':
-      return 'Cannot reach the database host — check the URL and your internet connection.'
     case 'ECONNREFUSED':
-      return 'Connection refused by the database host.'
     case 'CONNECT_TIMEOUT':
     case 'ETIMEDOUT':
-      return 'Timed out reaching the database.'
+      return (
+        'Cannot reach the database. Use the connection POOLER string ' +
+        '(Supabase → Connect → “Session pooler”: postgres.<ref>@…pooler.supabase.com:5432), ' +
+        'not the direct db.<ref>.supabase.co one — the direct host is IPv6-only and unreachable ' +
+        'on most networks. Also check your internet connection.'
+      )
     default:
+      // Supavisor returns XX000 "Tenant or user not found" when the pooler
+      // region in the string is wrong — surface the raw message so it's visible.
       return e.message ?? String(err)
   }
 }
@@ -121,9 +154,13 @@ export function friendlyError(err: unknown): string {
  * is the same person.
  */
 export async function ensurePersonId(sql: postgres.Sql, name: string): Promise<number> {
+  // The rate rides along because this is the one place a machine writes its own
+  // people row — and its own is the ONLY row it ever writes, which is what keeps
+  // one teammate's rate from clobbering another's.
+  const rate = getPersonRate()
   const [row] = await sql<{ id: number }[]>`
-    INSERT INTO people (name) VALUES (${name})
-    ON CONFLICT (name) DO UPDATE SET name = excluded.name
+    INSERT INTO people (name, billable_rate) VALUES (${name}, ${rate})
+    ON CONFLICT (name) DO UPDATE SET billable_rate = excluded.billable_rate
     RETURNING id
   `
   return row.id

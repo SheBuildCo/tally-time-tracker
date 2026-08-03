@@ -60,6 +60,7 @@ function ShortcutInput({
 function TeamSyncSection(): React.JSX.Element {
   const [status, setStatus] = useState<TeamStatus | null>(null)
   const [person, setPerson] = useState('')
+  const [rate, setRate] = useState('')
   const [url, setUrl] = useState('')
   const [busy, setBusy] = useState<'test' | 'save' | 'sync' | null>(null)
   const [result, setResult] = useState<{ ok: boolean; message: string } | null>(null)
@@ -69,6 +70,7 @@ function TeamSyncSection(): React.JSX.Element {
       setStatus(s)
       setPerson(s.personName ?? '')
     })
+    api.getSettings().then((s) => setRate(s.personRate ? String(s.personRate) : ''))
   }, [])
 
   async function test(): Promise<void> {
@@ -96,6 +98,7 @@ function TeamSyncSection(): React.JSX.Element {
         return
       }
       await api.teamSetup(person.trim(), url.trim() || '')
+      await api.setPersonRate(Number(rate) || 0)
       setStatus(await api.teamStatus())
       setUrl('') // don't keep the secret in component state once stored
       setResult({ ok: true, message: 'Saved. Your time will sync every few minutes.' })
@@ -151,6 +154,22 @@ function TeamSyncSection(): React.JSX.Element {
         </div>
 
         <div>
+          <label className="mb-1 block text-sm font-medium">Your rate / hr</label>
+          <input
+            value={rate}
+            onChange={(e) => setRate(e.target.value)}
+            type="number"
+            placeholder="150"
+            className="w-40 rounded-md border border-slate-300 px-3 py-1.5 text-sm"
+          />
+          <p className="mt-1 text-xs text-slate-500">
+            The rate <strong>your</strong> time is billed at — we each have our own, which is why
+            it lives here and not on the client. Only you can change yours. Leave blank if your
+            time shouldn’t be valued.
+          </p>
+        </div>
+
+        <div>
           <label className="mb-1 block text-sm font-medium">
             Database connection string {status?.hasUrl && !url && (
               <span className="font-normal text-slate-500">— saved, leave blank to keep</span>
@@ -160,11 +179,17 @@ function TeamSyncSection(): React.JSX.Element {
             value={url}
             onChange={(e) => setUrl(e.target.value)}
             type="password"
-            placeholder={status?.hasUrl ? '••••••••••••••••' : 'postgresql://postgres:…@db.….supabase.co:5432/postgres'}
+            placeholder={
+              status?.hasUrl
+                ? '••••••••••••••••'
+                : 'postgresql://postgres.<ref>:…@aws-0-<region>.pooler.supabase.com:5432/postgres'
+            }
             className="w-full rounded-md border border-slate-300 px-3 py-1.5 font-mono text-xs"
           />
           <p className="mt-1 text-xs text-slate-500">
-            Treat this like a shared password — anyone with it can read and change the team’s data.
+            Use Supabase’s <strong>Session pooler</strong> string (Connect → Session pooler) — it
+            works on every network. The direct <code>db.&lt;ref&gt;.supabase.co</code> string is
+            IPv6-only and won’t connect on most machines. Treat it like a shared password.
           </p>
         </div>
 
@@ -219,10 +244,26 @@ export function Settings(): React.JSX.Element {
   const [settings, setSettings] = useState<SettingsModel | null>(null)
   const [confirmingClear, setConfirmingClear] = useState(false)
   const [clearing, setClearing] = useState(false)
+  const [idleMinutes, setIdleMinutes] = useState('')
 
   useEffect(() => {
-    api.getSettings().then(setSettings)
+    api.getSettings().then((s) => {
+      setSettings(s)
+      setIdleMinutes(String(s.idleAutoStopMinutes))
+    })
   }, [])
+
+  async function saveIdle(): Promise<void> {
+    const m = Math.round(Number(idleMinutes))
+    if (!Number.isFinite(m) || m <= 0) {
+      // Ignore an invalid entry and revert the field to the saved value.
+      if (settings) setIdleMinutes(String(settings.idleAutoStopMinutes))
+      return
+    }
+    await api.setIdleAutoStop(m)
+    setSettings((s) => (s ? { ...s, idleAutoStopMinutes: m } : s))
+    setIdleMinutes(String(m))
+  }
 
   async function clearActivityData(): Promise<void> {
     setClearing(true)
@@ -316,9 +357,41 @@ export function Settings(): React.JSX.Element {
             </span>
           )}
         </div>
+        {settings.awStatus && !settings.awAfkWatcher && (
+          <p className="mt-2 rounded-md bg-amber-50 px-3 py-2 text-xs text-amber-900">
+            Idle detection unavailable — the ActivityWatch <strong>AFK watcher</strong> isn’t
+            running. Without it, time away from your computer is counted as active and session
+            durations can be inflated. Start ActivityWatch fully (it includes the AFK watcher) to
+            fix this.
+          </p>
+        )}
         <div className="mt-2 text-xs text-slate-500">
           Tracking activity since {formatDate(settings.trackingStartedAt)}
         </div>
+      </section>
+
+      <section className="rounded-lg border border-slate-200 bg-white p-4">
+        <h2 className="mb-1 font-medium">Timer</h2>
+        <label className="flex items-center justify-between">
+          <div>
+            <div className="text-sm font-medium">Auto-stop when idle</div>
+            <div className="text-xs text-slate-500">
+              Stops a running timer after this many minutes with no activity, so a forgotten
+              timer doesn’t keep counting. The idle time itself is never billed.
+            </div>
+          </div>
+          <div className="flex items-center gap-1 text-sm">
+            <input
+              type="number"
+              min={1}
+              value={idleMinutes}
+              onChange={(e) => setIdleMinutes(e.target.value)}
+              onBlur={saveIdle}
+              className="w-16 rounded-md border border-slate-300 px-2 py-1.5 text-right"
+            />
+            <span className="text-slate-500">min</span>
+          </div>
+        </label>
       </section>
 
       <section className="rounded-lg border border-red-200 bg-red-50 p-4">

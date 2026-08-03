@@ -8,18 +8,35 @@ import * as db from './db'
 import * as timer from './timer'
 import { getRangeRows, getSessionActivities, invalidateSession } from './ingest'
 import { buildRangeSummary } from './analytics'
-import { isAvailable } from './activitywatch'
-import { generateReport } from './reports'
-import { fetchTeamSummary, getLastSyncResult, syncNow } from './sync'
+import { getHealth, isAvailable } from './activitywatch'
+import { DEFAULT_IDLE_AUTO_STOP_MINUTES } from './timer'
+import { generateReport, generateTeamReport } from './reports'
+import {
+  deleteRemoteSession,
+  fetchTeamSummary,
+  getLastSyncResult,
+  listTeamPeople,
+  renameRemoteClient,
+  syncNow
+} from './sync'
+import { getAllRetainerStatuses, getRetainerStatus, invalidateRetainerCache } from './retainer'
 import {
   PERSON_NAME_KEY,
+  PERSON_RATE_KEY,
   SUPABASE_URL_KEY,
   getPersonName,
+  getPersonRate,
   getSupabaseUrl,
   isConfigured,
   testConnection
 } from './supabase'
-import type { Client, MappingRule, Settings, TeamStatus } from '../shared/types'
+import type {
+  Client,
+  ClientUpdateResult,
+  MappingRule,
+  Settings,
+  TeamStatus
+} from '../shared/types'
 
 // Side-effecting capabilities the handlers need but that live in main/index or
 // other modules. Injected to avoid circular imports.
@@ -36,7 +53,12 @@ function readSettings(): Settings {
     shortcutPicker: db.getSetting('shortcut_picker') ?? 'CommandOrControl+Shift+P',
     autoLaunch: db.getSetting('auto_launch') === 'true',
     trackingStartedAt: db.getSetting('tracking_started_at') ?? new Date().toISOString(),
-    awStatus: false // filled in live by settings:get
+    awStatus: false, // awStatus/awAfkWatcher filled in live by settings:get
+    awAfkWatcher: false,
+    idleAutoStopMinutes: Number(
+      db.getSetting('idle_auto_stop_minutes') ?? DEFAULT_IDLE_AUTO_STOP_MINUTES
+    ),
+    personRate: getPersonRate()
   }
 }
 
@@ -45,8 +67,21 @@ export function registerHandlers(ctx: HandlerContext): void {
     // Clients
     'clients:list': () => db.listClients(),
     'clients:create': (input: Omit<Client, 'id'>) => db.createClient(input),
-    'clients:update': (id: number, input: Partial<Omit<Client, 'id'>>) =>
-      db.updateClient(id, input),
+    // A rename has to reach the shared database too: clients are joined by name
+    // there, so renaming only locally would strand the team's existing history
+    // under the old name (see sync.ts's header).
+    'clients:update': async (
+      id: number,
+      input: Partial<Omit<Client, 'id'>>
+    ): Promise<ClientUpdateResult> => {
+      const before = db.getClient(id)
+      const client = db.updateClient(id, input)
+      invalidateRetainerCache(id)
+
+      const renamed = before && client && before.name !== client.name
+      const remoteRename = renamed ? await renameRemoteClient(before.name, client.name) : null
+      return { client, remoteRename }
+    },
     'clients:delete': (id: number) => db.deleteClient(id),
 
     // Rules
@@ -76,17 +111,30 @@ export function registerHandlers(ctx: HandlerContext): void {
       const session = db.getSession(sessionId)
       if (session) invalidateSession(session)
     },
+    'sessions:delete': async (id: number) => {
+      const session = db.getSession(id)
+      if (!session) return { ok: true as const, remoteDeleted: true }
+      // Unfinalize the affected day(s) so the dashboard/report recompute without
+      // this session's override, then delete locally (cascades to snapshot +
+      // exclusions) and from the shared DB.
+      invalidateSession(session)
+      db.deleteSession(id)
+      const remoteDeleted = await deleteRemoteSession(session)
+      return { ok: true as const, remoteDeleted }
+    },
 
     // Analytics
     'analytics:range': async (days: number) => {
       const rows = await getRangeRows(days)
-      return buildRangeSummary(rows, db.listClients(), days)
+      return buildRangeSummary(rows, db.listClients(), days, getPersonRate())
     },
 
     // Settings
     'settings:get': async (): Promise<Settings> => {
       const s = readSettings()
-      s.awStatus = await isAvailable()
+      const health = await getHealth()
+      s.awStatus = health.available
+      s.awAfkWatcher = health.afkWatcher
       return s
     },
     'settings:updateShortcuts': (toggle: string, picker: string) => {
@@ -98,15 +146,27 @@ export function registerHandlers(ctx: HandlerContext): void {
       db.setSetting('auto_launch', enabled ? 'true' : 'false')
       ctx.setAutoLaunch(enabled)
     },
+    'settings:setIdleAutoStop': (minutes: number) => {
+      const m = Math.round(Number(minutes))
+      if (Number.isFinite(m) && m > 0) db.setSetting('idle_auto_stop_minutes', String(m))
+    },
+    // This person's own hourly rate. Takes effect on the next sync, which
+    // writes it to their row in the shared `people` table.
+    'settings:setPersonRate': (rate: number) => {
+      const r = Number(rate)
+      db.setSetting(PERSON_RATE_KEY, String(Number.isFinite(r) && r > 0 ? r : 0))
+    },
     'settings:clearActivityData': () => db.clearActivityData(),
 
-    // Reports
+    // Reports (CSV only)
     'reports:generate': (clientId: number, startDay: string, endDay: string) =>
       generateReport(clientId, startDay, endDay),
+    // Team report from the shared DB: whole team when `person` is omitted, else
+    // that one member.
+    'reports:generateTeam': (clientId: number, startDay: string, endDay: string, person?: string) =>
+      generateTeamReport(clientId, startDay, endDay, person),
     'reports:history': (clientId?: number) => db.listReportHistory(clientId),
     'reports:openFile': (path: string) => shell.openPath(path),
-    'reports:getTemplate': () => db.getSetting('report_template_html'),
-    'reports:saveTemplate': (html: string) => db.setSetting('report_template_html', html),
 
     // Team sync (shared Supabase database). Every one of these is safe to call
     // when team sync isn't configured — the UI stays usable either way.
@@ -118,12 +178,29 @@ export function registerHandlers(ctx: HandlerContext): void {
     }),
     'team:setup': (personName: string, url: string) => {
       db.setSetting(PERSON_NAME_KEY, personName.trim())
-      db.setSetting(SUPABASE_URL_KEY, url.trim())
+      // A BLANK url means "keep what's stored" — that's what the Settings field
+      // promises ("saved, leave blank to keep"). Writing it through would erase
+      // the connection string, and because an unconfigured Tally fails soft, the
+      // only symptom is team sync silently going quiet. Saving any other change
+      // in that section (your name, your rate) used to do exactly that.
+      const next = url.trim()
+      if (next) db.setSetting(SUPABASE_URL_KEY, next)
       return { configured: isConfigured() }
     },
     'team:test': (url?: string) => testConnection(url),
-    'team:sync': () => syncNow(),
+    'team:sync': async () => {
+      const result = await syncNow()
+      invalidateRetainerCache() // a sync may have changed the team's usage
+      return result
+    },
     'team:summary': (days: number) => fetchTeamSummary(days),
+    'team:people': () => listTeamPeople(),
+
+    // Retainer (team-wide usage of this calendar month's included hours)
+    'retainer:status': (clientId: number, force?: boolean) =>
+      getRetainerStatus(clientId, { force }),
+    // Every client at once, for the dashboard's per-client retainer columns.
+    'retainer:all': () => getAllRetainerStatuses(),
 
     // ActivityWatch
     'aw:health': () => isAvailable()
@@ -153,20 +230,25 @@ export const CHANNELS = [
   'sessions:activities',
   'sessions:exclude',
   'sessions:include',
+  'sessions:delete',
   'analytics:range',
   'settings:get',
   'settings:updateShortcuts',
   'settings:setAutoLaunch',
+  'settings:setIdleAutoStop',
+  'settings:setPersonRate',
   'settings:clearActivityData',
   'aw:health',
   'reports:generate',
+  'reports:generateTeam',
   'reports:history',
   'reports:openFile',
-  'reports:getTemplate',
-  'reports:saveTemplate',
   'team:status',
   'team:setup',
   'team:test',
   'team:sync',
-  'team:summary'
+  'team:summary',
+  'team:people',
+  'retainer:status',
+  'retainer:all'
 ] as const

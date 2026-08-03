@@ -59,10 +59,15 @@ export function initMemoryDb(): Database.Database {
 function migrate(): void {
   db.exec(`
     CREATE TABLE IF NOT EXISTS clients (
-      id            INTEGER PRIMARY KEY AUTOINCREMENT,
-      name          TEXT NOT NULL,
-      billable_rate REAL NOT NULL DEFAULT 0,
-      color         TEXT NOT NULL DEFAULT '#6366f1'
+      id             INTEGER PRIMARY KEY AUTOINCREMENT,
+      name           TEXT NOT NULL,
+      billable_rate  REAL NOT NULL DEFAULT 0,
+      retainer_hours REAL NOT NULL DEFAULT 0,
+      color          TEXT NOT NULL DEFAULT '#6366f1',
+      -- When this client's details were last EDITED BY A PERSON (not synced).
+      -- Drives last-edit-wins in sync.ts; the epoch default means a row nobody
+      -- has touched never overwrites a teammate's real edit.
+      updated_at     TEXT NOT NULL DEFAULT '1970-01-01T00:00:00.000Z'
     );
 
     CREATE TABLE IF NOT EXISTS rules (
@@ -143,39 +148,45 @@ function migrate(): void {
     CREATE INDEX IF NOT EXISTS idx_report_history_client ON report_history(client_id);
   `)
 
+  // CREATE TABLE IF NOT EXISTS never touches an existing table, so every column
+  // added after the first release has to be applied explicitly for machines that
+  // already have a tally.db.
+  addColumnIfMissing('clients', 'retainer_hours', 'retainer_hours REAL NOT NULL DEFAULT 0')
+  // Existing rows land on the epoch deliberately: before this column existed
+  // nobody's copy was authoritative, so no machine's untouched values should
+  // win. The first real edit anywhere becomes the truth.
+  addColumnIfMissing(
+    'clients',
+    'updated_at',
+    `updated_at TEXT NOT NULL DEFAULT '1970-01-01T00:00:00.000Z'`
+  )
+
   // First run (or upgrading from a DB that predates this setting): anchor
   // ingestion to "now" so we never retroactively pull in AW history that
   // predates the user actually starting to use Tally.
   if (!getSetting('tracking_started_at')) {
     setSetting('tracking_started_at', new Date().toISOString())
   }
-
-  // Seed a starter report template so the Reports page isn't empty on first
-  // use. This is the exact HTML shape TipTap's mergeField/mergeFieldBlock
-  // nodes emit, so it round-trips cleanly when loaded into the editor.
-  if (!getSetting('report_template_html')) {
-    setSetting('report_template_html', DEFAULT_REPORT_TEMPLATE_HTML)
-  }
 }
 
-const DEFAULT_REPORT_TEMPLATE_HTML = `
-<h2>Work Summary</h2>
-<p><span data-merge-field="client_name" contenteditable="false">[Client Name]</span> — <span data-merge-field="date_range" contenteditable="false">[Date Range]</span></p>
-<p>Please find a summary of work completed below.</p>
-<div data-merge-field="sessions_table" contenteditable="false">[Sessions Table]</div>
-<p>Generated <span data-merge-field="generated_date" contenteditable="false">[Generated Date]</span></p>
-`.trim()
+/** Idempotent additive migration for a single column. */
+function addColumnIfMissing(table: string, column: string, ddl: string): void {
+  const cols = db.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[]
+  if (!cols.some((c) => c.name === column)) {
+    db.exec(`ALTER TABLE ${table} ADD COLUMN ${ddl}`)
+  }
+}
 
 function seedIfEmpty(): void {
   const count = db.prepare('SELECT COUNT(*) AS n FROM clients').get() as { n: number }
   if (count.n > 0) return
 
   const insertClient = db.prepare(
-    'INSERT INTO clients (name, billable_rate, color) VALUES (?, ?, ?)'
+    'INSERT INTO clients (name, retainer_hours, color) VALUES (?, ?, ?)'
   )
   const internal = insertClient.run('Internal / Admin', 0, '#64748b').lastInsertRowid as number
-  insertClient.run('Example Client A', 150, '#6366f1')
-  insertClient.run('Example Client B', 120, '#10b981')
+  insertClient.run('Example Client A', 0, '#6366f1')
+  insertClient.run('Example Client B', 0, '#10b981')
 
   // A couple of starter rules mapping common internal apps to Internal/Admin.
   const insertRule = db.prepare(
@@ -195,13 +206,16 @@ function seedIfEmpty(): void {
 
 // ---- Clients ----
 
-function rowToClient(r: {
-  id: number
-  name: string
-  billable_rate: number
-  color: string
-}): Client {
-  return { id: r.id, name: r.name, billableRate: r.billable_rate, color: r.color }
+// NB: the clients table still HAS a billable_rate column. It's legacy — rates
+// moved onto people — and is deliberately left in place rather than dropped so
+// the old values survive if we ever need them. Nothing reads or writes it.
+function rowToClient(r: { id: number; name: string; retainer_hours: number; color: string }): Client {
+  return {
+    id: r.id,
+    name: r.name,
+    retainerHours: r.retainer_hours,
+    color: r.color
+  }
 }
 
 export function listClients(): Client[] {
@@ -216,8 +230,8 @@ export function getClient(id: number): Client | null {
 
 export function createClient(input: Omit<Client, 'id'>): Client {
   const info = db
-    .prepare('INSERT INTO clients (name, billable_rate, color) VALUES (?, ?, ?)')
-    .run(input.name, input.billableRate, input.color)
+    .prepare('INSERT INTO clients (name, retainer_hours, color, updated_at) VALUES (?, ?, ?, ?)')
+    .run(input.name, input.retainerHours ?? 0, input.color, new Date().toISOString())
   return getClient(info.lastInsertRowid as number)!
 }
 
@@ -225,13 +239,56 @@ export function updateClient(id: number, input: Partial<Omit<Client, 'id'>>): Cl
   const existing = getClient(id)
   if (!existing) return null
   const merged = { ...existing, ...input }
-  db.prepare('UPDATE clients SET name = ?, billable_rate = ?, color = ? WHERE id = ?').run(
-    merged.name,
-    merged.billableRate,
-    merged.color,
-    id
-  )
+  // Stamping updated_at is what makes this edit beat every other machine's copy
+  // on the next sync — see pushClients in sync.ts.
+  db.prepare(
+    'UPDATE clients SET name = ?, retainer_hours = ?, color = ?, updated_at = ? WHERE id = ?'
+  ).run(merged.name, merged.retainerHours, merged.color, new Date().toISOString(), id)
   return getClient(id)
+}
+
+// ---- Client sync support ----
+//
+// updated_at is deliberately NOT part of the Client type: it's a sync
+// implementation detail, and the renderer has no use for it. These two
+// functions are the only way in or out.
+
+export interface ClientSyncRow extends Client {
+  updatedAt: string
+}
+
+export function listClientsForSync(): ClientSyncRow[] {
+  const rows = db.prepare('SELECT * FROM clients ORDER BY name').all() as any[]
+  return rows.map((r) => ({ ...rowToClient(r), updatedAt: r.updated_at }))
+}
+
+/**
+ * Apply a client from the shared database, matched by name (ids are
+ * per-machine). Creates it locally when it's new, and overwrites the local
+ * details ONLY when the shared copy was edited more recently.
+ *
+ * The remote timestamp is stored verbatim rather than stamped as "now", so a
+ * pulled row doesn't look like a fresh local edit and get pushed straight back —
+ * that would make two machines ping-pong forever.
+ */
+export function upsertClientFromRemote(remote: {
+  name: string
+  retainerHours: number
+  color: string
+  updatedAt: string
+}): 'created' | 'updated' | 'unchanged' {
+  const existing = db.prepare('SELECT * FROM clients WHERE name = ?').get(remote.name) as any
+  if (!existing) {
+    db.prepare(
+      'INSERT INTO clients (name, retainer_hours, color, updated_at) VALUES (?, ?, ?, ?)'
+    ).run(remote.name, remote.retainerHours, remote.color, remote.updatedAt)
+    return 'created'
+  }
+  if (remote.updatedAt <= existing.updated_at) return 'unchanged'
+  db.prepare(
+    'UPDATE clients SET retainer_hours = ?, color = ?, updated_at = ? WHERE id = ?'
+  ).run(remote.retainerHours, remote.color, remote.updatedAt, existing.id)
+  return 'updated'
 }
 
 export function deleteClient(id: number): void {
@@ -375,7 +432,10 @@ function rowToSession(r: any): TimerSession {
     startTime: r.start_time,
     endTime: r.end_time,
     notes: r.notes,
-    createdAt: r.created_at
+    createdAt: r.created_at,
+    // Present only when the query selected it (listSessions); left undefined
+    // otherwise so callers that don't need it pay nothing.
+    activeSeconds: r.active_seconds != null ? r.active_seconds : undefined
   }
 }
 
@@ -391,14 +451,34 @@ export function endSession(id: number, endTime: string): TimerSession | null {
   return getSession(id)
 }
 
+// Permanently delete a session. Its snapshot and exclusions go with it via
+// ON DELETE CASCADE (foreign_keys pragma is on). Used to drop a session that
+// isn't worth billing so it never appears in a report.
+export function deleteSession(id: number): void {
+  db.prepare('DELETE FROM timer_sessions WHERE id = ?').run(id)
+}
+
 export function getSession(id: number): TimerSession | null {
   const r = db.prepare('SELECT * FROM timer_sessions WHERE id = ?').get(id) as any
   return r ? rowToSession(r) : null
 }
 
 export function listSessions(limit = 100): TimerSession[] {
+  // active_seconds = the session's real worked time (sum of its snapshot), so
+  // the list shows active time rather than wall-clock end−start (which balloons
+  // for a forgotten timer). Completed sessions have a snapshot; a running one
+  // has none yet (COALESCE → 0), and the UI shows its live elapsed instead.
   const rows = db
-    .prepare('SELECT * FROM timer_sessions ORDER BY start_time DESC LIMIT ?')
+    .prepare(
+      `SELECT ts.*,
+              COALESCE(
+                (SELECT SUM(seconds) FROM session_activity_snapshot WHERE session_id = ts.id),
+                0
+              ) AS active_seconds
+       FROM timer_sessions ts
+       ORDER BY start_time DESC
+       LIMIT ?`
+    )
     .all(limit) as any[]
   return rows.map(rowToSession)
 }
@@ -437,6 +517,78 @@ export function getSessionsForClientInRange(
     )
     .all(clientId, endISO, startISO) as any[]
   return rows.map(rowToSession)
+}
+
+// Total active seconds this machine has tracked for a client over
+// [startISO, endISO] — snapshot total minus anything excluded, matching
+// sessionActiveSeconds. Sessions are picked by start_time (not overlap) so the
+// figure reconciles with the team-wide query in sync.ts, which does the same.
+// Used as the offline fallback for the retainer readout.
+export function getClientActiveSecondsInRange(
+  clientId: number,
+  startISO: string,
+  endISO: string
+): number {
+  const row = db
+    .prepare(
+      `SELECT COALESCE(SUM(
+                COALESCE(snap.total, 0) - COALESCE(exc.total, 0)
+              ), 0) AS active_seconds
+       FROM timer_sessions ts
+       LEFT JOIN (
+         SELECT session_id, SUM(seconds) AS total
+         FROM session_activity_snapshot GROUP BY session_id
+       ) snap ON snap.session_id = ts.id
+       LEFT JOIN (
+         SELECT sas.session_id, SUM(sas.seconds) AS total
+         FROM session_activity_snapshot sas
+         JOIN session_exclusions se
+           ON se.session_id = sas.session_id AND se.app = sas.app
+          AND se.host = sas.host AND se.activity = sas.activity
+         GROUP BY sas.session_id
+       ) exc ON exc.session_id = ts.id
+       WHERE ts.client_id = ?
+         AND ts.end_time IS NOT NULL
+         AND ts.start_time >= ? AND ts.start_time <= ?`
+    )
+    .get(clientId, startISO, endISO) as { active_seconds: number }
+  return Math.max(0, row.active_seconds)
+}
+
+// Same figure as getClientActiveSecondsInRange, for every client at once, keyed
+// by client NAME to match the shared-database version (ids are per-machine, see
+// the header of sync.ts). One query rather than one per client, because the
+// dashboard needs the whole list at once.
+export function getAllClientsActiveSecondsInRange(
+  startISO: string,
+  endISO: string
+): Map<string, number> {
+  const rows = db
+    .prepare(
+      `SELECT c.name AS name,
+              COALESCE(SUM(
+                COALESCE(snap.total, 0) - COALESCE(exc.total, 0)
+              ), 0) AS active_seconds
+       FROM timer_sessions ts
+       JOIN clients c ON c.id = ts.client_id
+       LEFT JOIN (
+         SELECT session_id, SUM(seconds) AS total
+         FROM session_activity_snapshot GROUP BY session_id
+       ) snap ON snap.session_id = ts.id
+       LEFT JOIN (
+         SELECT sas.session_id, SUM(sas.seconds) AS total
+         FROM session_activity_snapshot sas
+         JOIN session_exclusions se
+           ON se.session_id = sas.session_id AND se.app = sas.app
+          AND se.host = sas.host AND se.activity = sas.activity
+         GROUP BY sas.session_id
+       ) exc ON exc.session_id = ts.id
+       WHERE ts.end_time IS NOT NULL
+         AND ts.start_time >= ? AND ts.start_time <= ?
+       GROUP BY c.name`
+    )
+    .all(startISO, endISO) as { name: string; active_seconds: number }[]
+  return new Map(rows.map((r) => [r.name, Math.max(0, r.active_seconds)]))
 }
 
 export function getRunningSession(): TimerSession | null {
@@ -529,7 +681,6 @@ function rowToReportHistoryEntry(r: any): ReportHistoryEntry {
     clientId: r.client_id,
     startDate: r.start_date,
     endDate: r.end_date,
-    pdfPath: r.pdf_path,
     csvPath: r.csv_path,
     createdAt: r.created_at
   }
@@ -539,15 +690,16 @@ export function createReportHistoryEntry(input: {
   clientId: number
   startDate: string
   endDate: string
-  pdfPath: string
   csvPath: string
 }): ReportHistoryEntry {
+  // pdf_path is a legacy NOT NULL column (PDF output was removed). SQLite has no
+  // ALTER-drop migration here, so we keep the column and write an empty string.
   const info = db
     .prepare(
       `INSERT INTO report_history (client_id, start_date, end_date, pdf_path, csv_path)
-       VALUES (?, ?, ?, ?, ?)`
+       VALUES (?, ?, ?, '', ?)`
     )
-    .run(input.clientId, input.startDate, input.endDate, input.pdfPath, input.csvPath)
+    .run(input.clientId, input.startDate, input.endDate, input.csvPath)
   return getReportHistoryEntry(info.lastInsertRowid as number)!
 }
 

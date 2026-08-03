@@ -1,11 +1,12 @@
 import { describe, it, expect } from 'vitest'
-import { applySessionOverrides, rollup, buildRangeSummary } from './analytics'
+import { applySessionOverrides, rollup, buildRangeSummary, sessionActiveSeconds } from './analytics'
 import { categorizeAll } from './categorize'
 import type {
   UsageEvent,
   MappingRule,
   TimerSession,
   SessionExclusion,
+  SessionActivity,
   Client
 } from '../shared/types'
 
@@ -30,8 +31,8 @@ function session(
 }
 
 const clients: Client[] = [
-  { id: 1, name: 'Client A', billableRate: 100, color: '#111' },
-  { id: 2, name: 'Client B', billableRate: 200, color: '#222' }
+  { id: 1, name: 'Client A', retainerHours: 0, color: '#111' },
+  { id: 2, name: 'Client B', retainerHours: 40, color: '#222' }
 ]
 
 describe('applySessionOverrides', () => {
@@ -122,19 +123,56 @@ describe('applySessionOverrides', () => {
 
 describe('rollup', () => {
   it('aggregates seconds by client/app/activity/host', () => {
+    const rules: MappingRule[] = [
+      { id: 1, match: { app: 'code.exe' }, clientId: 1, billable: true, priority: 10 }
+    ]
     const events = [
       evt({ timestamp: '2026-07-08T10:00:00.000Z', duration: 100, app: 'code.exe', title: 'main.ts' }),
       evt({ timestamp: '2026-07-08T10:05:00.000Z', duration: 50, app: 'code.exe', title: 'main.ts' })
     ]
-    const categorized = categorizeAll(events, [])
+    const categorized = categorizeAll(events, rules)
     const rows = rollup(categorized, '2026-07-08')
     expect(rows).toHaveLength(1)
     expect(rows[0].seconds).toBe(150)
+    expect(rows[0].clientId).toBe(1)
+  })
+
+  it('drops unassigned time — a row with no client is never produced', () => {
+    const events = [
+      evt({ timestamp: '2026-07-08T10:00:00.000Z', duration: 100, app: 'code.exe', title: 'main.ts' })
+    ]
+    const categorized = categorizeAll(events, []) // no rules → null client
+    expect(rollup(categorized, '2026-07-08')).toHaveLength(0)
+  })
+})
+
+describe('sessionActiveSeconds', () => {
+  const act = (seconds: number, excluded = false): SessionActivity => ({
+    app: 'x',
+    host: '',
+    activity: 'a',
+    seconds,
+    excluded,
+    exclusionId: excluded ? 1 : null
+  })
+
+  it('sums non-excluded activity seconds', () => {
+    expect(sessionActiveSeconds([act(300), act(600)])).toBe(900)
+  })
+
+  it('ignores excluded activities', () => {
+    expect(sessionActiveSeconds([act(300), act(600, true)])).toBe(300)
+  })
+
+  it('is zero for no activities', () => {
+    expect(sessionActiveSeconds([])).toBe(0)
   })
 })
 
 describe('buildRangeSummary', () => {
-  it('computes billable amount from client rate', () => {
+  // The rate belongs to the PERSON now, so one rate values every row here —
+  // a personal summary only ever covers this machine's own time.
+  it('computes billable amount from the person rate', () => {
     const events = [
       evt({ timestamp: '2026-07-08T10:00:00.000Z', duration: 3600, app: 'code.exe', title: 'work' })
     ]
@@ -147,10 +185,10 @@ describe('buildRangeSummary', () => {
     })
     categorized = applySessionOverrides(categorized, [s], new Map())
     const rows = rollup(categorized, '2026-07-08')
-    const summary = buildRangeSummary(rows, clients, 1)
+    const summary = buildRangeSummary(rows, clients, 1, 200)
     const clientB = summary.clients.find((c) => c.clientId === 2)!
     expect(clientB.billableSeconds).toBe(3600)
-    expect(clientB.amount).toBe(200) // 1h * $200
+    expect(clientB.amount).toBe(200) // 1h * $200/hr, this person's rate
   })
 })
 

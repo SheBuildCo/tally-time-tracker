@@ -17,9 +17,12 @@ export function Sessions(): React.JSX.Element {
   const clientName = (id: number): string =>
     clients.find((c) => c.id === id)?.name ?? `Client #${id}`
 
+  // Completed sessions show their active tracked time (activeSeconds), not
+  // wall-clock end−start — a forgotten timer has a huge span but little active
+  // time. A running session shows live elapsed (bounded by idle auto-stop).
   const duration = (s: TimerSession): number => {
-    const end = s.endTime ? Date.parse(s.endTime) : Date.now()
-    return (end - Date.parse(s.startTime)) / 1000
+    if (s.endTime) return s.activeSeconds ?? 0
+    return (Date.now() - Date.parse(s.startTime)) / 1000
   }
 
   return (
